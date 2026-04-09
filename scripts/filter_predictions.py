@@ -23,7 +23,7 @@ def load_gt_boxes(vid, ann_id):
 
 def main(args):
     gt_bboxes = load_gt_boxes(args.video, args.ann_id)
-    proposals_path = DATA_PATH / "results" / "videos" / args.video / args.proposals
+    proposals_path = DATA_PATH / "results" / "sam3d" / args.video / args.proposals
     proposals = read_json(proposals_path)
     
     N = len(list(takewhile(lambda x: x['image_id']==0, proposals)))

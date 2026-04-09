@@ -154,6 +154,8 @@ def get_z_from_pointcloud(bbox, pointcloud, K, TCO_init):
     xy_init = ((bb_xy_centers - cxcy) * z_guess) / fxfy
 
     TCO[:2, 3] = xy_init
+    if pointcloud.shape[0] == 0:
+        return TCO
     deltax_3d = pointcloud[:, 0].max() - pointcloud[:, 0].min()
     deltay_3d = pointcloud[:, 1].max() - pointcloud[:, 1].min()
     bb_deltax = (bbox[2] - bbox[0]) + 1

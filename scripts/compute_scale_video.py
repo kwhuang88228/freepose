@@ -7,6 +7,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 import torch
+from tqdm import tqdm
 from loguru import logger
 from sam2.utils.amg import rle_to_mask
 
@@ -25,7 +26,7 @@ if __name__ == "__main__":
     video_dir = Path("data") / "datasets" / "videos" / args.video
     frame_paths = sorted([p for p in video_dir.iterdir() if p.suffix.lower() in [".jpg", ".jpeg"]])
 
-    results_dir = (Path("data") / "results" / "videos" / args.video).resolve()
+    results_dir = (Path("data") / "results" / "sam3d" / args.video).resolve()
     input_path = results_dir / args.proposals
     output_path = results_dir / args.proposals.replace(".json", "_gpt4_scaled.json")
 
@@ -57,9 +58,7 @@ if __name__ == "__main__":
     for p in proposals_all:
         props[p["image_id"]].append(p)
 
-    for frame_idx, frame_path in enumerate(frame_paths):
-        logger.info(f"Processing frame {frame_idx}/{len(frame_paths)}")
-
+    for frame_idx, frame_path in tqdm(enumerate(frame_paths), total=len(frame_paths)):
         image = cv2.cvtColor(
             cv2.imread(str(frame_paths[frame_idx])), cv2.COLOR_BGR2RGB
         ).astype(np.uint8)
