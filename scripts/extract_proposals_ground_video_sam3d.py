@@ -48,19 +48,25 @@ SAM3D_CONFIG_PATH = str(_SAM3D_ROOT / "checkpoints" / "hf" / "pipeline.yaml")
 # ── Detection ──────────────────────────────────────────────────────────────────
 
 def get_init_bboxes(image, text_prompt, box_thresh, text_thresh, device="cuda"):
-    assert isinstance(image, np.ndarray) and image.ndim == 3 and image.shape[2] == 3
+    assert isinstance(image, np.ndarray)
+    assert len(image.shape) == 3 and image.shape[2] == 3
 
     logger.info("Loading Grounding DINO model")
+
     model_id  = "IDEA-Research/grounding-dino-base"
     processor = AutoProcessor.from_pretrained(model_id)
     model     = AutoModelForZeroShotObjectDetection.from_pretrained(model_id).to(device)
 
     inputs  = processor(images=image, text=text_prompt, return_tensors="pt").to(device)
+    
     with torch.inference_mode():
         outputs = model(**inputs)
+
     results = processor.post_process_grounded_object_detection(
-        outputs, inputs.input_ids,
-        box_threshold=box_thresh, text_threshold=text_thresh,
+        outputs, 
+        inputs.input_ids,
+        box_threshold=box_thresh, 
+        text_threshold=text_thresh,
         target_sizes=[image.shape[:2]],
     )[0]
 
@@ -68,7 +74,9 @@ def get_init_bboxes(image, text_prompt, box_thresh, text_thresh, device="cuda"):
     scores = results["scores"].cpu().numpy()
     labels = results["labels"]
     idxs   = np.where(np.array(labels) != '')[0]
-    bboxes, scores, labels = [bboxes[i] for i in idxs], [scores[i] for i in idxs], [labels[i] for i in idxs]
+    bboxes = [bboxes[i] for i in idxs]
+    scores = [scores[i] for i in idxs]
+    labels = [labels[i] for i in idxs]
 
     if len(scores) > 0:
         best   = int(np.argmax(scores))
@@ -85,6 +93,7 @@ def track_with_sam2(video_dir, bboxes, scores, frame_paths, reverse=False, devic
     logger.info("Loading SAM2 model")
     checkpoint = "./data/checkpoints/sam2_hiera_large.pt"
     model_cfg  = "sam2_hiera_l.yaml"
+    
     predictor  = build_sam2_video_predictor(model_cfg, checkpoint, device=device)
     inference_state = predictor.init_state(video_path=str(video_dir))
 
@@ -105,29 +114,35 @@ def track_with_sam2(video_dir, bboxes, scores, frame_paths, reverse=False, devic
         for frame_idx, obj_ids, mask_logits in predictor.propagate_in_video(
             inference_state, reverse=reverse, start_frame_idx=start_frame
         ):
+            scores = [1.0] * len(obj_ids)
             masks  = [(mask_logits[i] > 0.0)[0] for i in range(len(obj_ids))]
+
             boxes  = []
             for i, mask in enumerate(masks):
                 if mask.sum() < 100:
                     ignore_objects.add(i)
                     boxes.append(None)
                     continue
+
                 bbox = mask_to_bbox(mask.cpu().numpy())
                 w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+
                 if w < 10 or h < 10:
                     ignore_objects.add(i)
                     boxes.append(None)
                     continue
+
                 boxes.append(bbox)
 
             tracking_output[frame_idx] = {
                 "boxes":  boxes,
                 "masks":  masks,
-                "scores": [1.0] * len(obj_ids),
+                "scores": scores,
             }
 
     if ignore_objects:
         logger.info(f"Ignoring objects: {ignore_objects}")
+        
     obj_idxs = sorted(list(ignore_objects))[::-1]
     for output in tracking_output.values():
         for idx in obj_idxs:
@@ -233,11 +248,9 @@ if __name__ == "__main__":
 
     # Save detection visualisation
     from scripts.vis_detections_video import vis_detections
-    viz_path = results_dir / f"viz_detections_{args.video}.png"
+    viz_path = debug_detection / f"detections_{args.video}.png"
     vis_detections(image, bboxes, viz_path, xywh=False, labels=labels, scores=scores)
-    import shutil
-    shutil.copy(viz_path, debug_detection / f"detections_{args.video}.png")
-    logger.info(f"Saved detection viz → {debug_detection}")
+    logger.info(f"Saved detection viz → {viz_path}")
 
     # ── Stage 1b: SAM2 tracking ───────────────────────────────────────────────
     tracking_output = track_with_sam2(

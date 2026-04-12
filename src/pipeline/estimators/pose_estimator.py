@@ -16,6 +16,33 @@ from src.pipeline.utils import depthmap_to_pointcloud, get_z_from_pointcloud
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 class DinoPoseEstimator(nn.Module):
+
+    @staticmethod
+    def _to_patch_mask(mask, patch_size: int = 14):
+        """Downsample a spatial boolean mask to patch resolution.
+
+        Args:
+            mask: numpy ndarray or torch tensor of shape [H, W] or [N, H, W].
+        Returns:
+            CPU bool tensor of shape [num_patches] or [N, num_patches].
+            A patch is considered foreground if any of its pixels are foreground.
+        """
+        if isinstance(mask, np.ndarray):
+            t = torch.from_numpy(mask.astype(np.float32))
+        else:
+            t = mask.float().cpu()
+
+        if t.dim() == 2:                              # [H, W]
+            t = t.unsqueeze(0).unsqueeze(0)           # [1, 1, H, W]
+            pooled = F.avg_pool2d(t, kernel_size=patch_size, stride=patch_size)
+            return (pooled[0, 0] > 0).flatten()       # [num_patches]
+        elif t.dim() == 3:                            # [N, H, W]
+            t = t.unsqueeze(1)                        # [N, 1, H, W]
+            pooled = F.avg_pool2d(t, kernel_size=patch_size, stride=patch_size)
+            return (pooled[:, 0] > 0).flatten(1)      # [N, num_patches]
+        else:
+            raise ValueError(f"Expected 2D or 3D mask, got {t.dim()}D")
+
     def __init__(self, n_poses=600, cache_size=50, save_all=False, cache_dir='./data/cache'):
         super(DinoPoseEstimator, self).__init__()
         self.feature_extractor = DINOv2FeatureExtractor().to('cuda', dtype=torch.bfloat16)
@@ -76,7 +103,8 @@ class DinoPoseEstimator(nn.Module):
     def __del__(self):
         shutil.rmtree(self.cache_dir)
 
-    def forward(self, proposal, template_dict, K, bbox, est_scale, layer=22, batch_size=128, return_query_feat=False):
+    def forward(self, proposal, template_dict, K, bbox, est_scale, layer=22, batch_size=128,
+                return_query_feat=False, proposal_mask=None):
         if self.cache_size > 0:
             feats_template = self._get_template_features(template_dict, layer=layer, batch_size=batch_size)
         elif self.cache_size == 0:
@@ -84,8 +112,23 @@ class DinoPoseEstimator(nn.Module):
         query_feat = self.feature_extractor(proposal[None].to('cuda', dtype=torch.bfloat16), layer=layer, feature_type='patch')
         signature = 'b n d, b n d -> b n'
 
-        # do product between NxD templates and 1xD query
-        scores = einsum(F.normalize(feats_template, dim=-1), F.normalize(query_feat, dim=-1), signature).mean(dim=-1)
+        # Per-patch cosine similarities: [N_templates, num_patches]
+        per_patch_sim = einsum(
+            F.normalize(feats_template, dim=-1),
+            F.normalize(query_feat, dim=-1),
+            signature,
+        )
+
+        # Masked mean: average only over query foreground patches (constant across all templates).
+        # Using AND(tmpl_mask, q_mask) would make the denominator template-dependent, which
+        # removes the penalty for templates whose object doesn't appear where the query does.
+        if proposal_mask is not None:
+            q_patch_mask = self._to_patch_mask(proposal_mask)                    # [num_patches]
+            q_patch_mask = q_patch_mask.to(per_patch_sim.device).unsqueeze(0)   # [1, num_patches]
+            count = q_patch_mask.float().sum().clamp(min=1)
+            scores = (per_patch_sim * q_patch_mask.float()).sum(dim=-1) / count
+        else:
+            scores = per_patch_sim.mean(dim=-1)
 
         top_scores, top_indices = torch.topk(scores, 3)
         top_scores = top_scores.float().cpu().numpy()

@@ -31,6 +31,7 @@ from sam2.utils.amg import rle_to_mask
 from tqdm import tqdm
 
 from src.pipeline.estimators.online_pose_estimator_sam3d import DinoOnlinePoseEstimatorSam3d
+from src.pipeline.estimators.pose_estimator import DinoPoseEstimator
 from src.pipeline.retrieval.renderer_sam3d import (
     K_SAM3D,
     SplatRenderer,
@@ -63,18 +64,24 @@ def build_template_dict(gs, model_name: str, n_poses: int = 600, bbox_extend: fl
     logger.info(f"Rendering {n_poses} template views for {model_name}")
     renderer = SplatRenderer(n_poses=n_poses)
     renders  = renderer.render(gs)                                    # list of (rgb, depth, tcoinit)
-    templates_cropped, tcoinits, _ = renderer.generate_proposals(renders, bbox_extend=bbox_extend)
+    templates_cropped, tcoinits, masks_cropped = renderer.generate_proposals(renders, bbox_extend=bbox_extend)
 
     depths = [torch.from_numpy(renders[i][1]) for i in range(len(renders))]
 
+    # Pre-compute patch-level foreground masks from the CROPPED template masks.
+    # masks_cropped matches the spatial layout of templates_cropped (what DINOv2 sees).
+    # Shape: [N, num_patches] bool — used for masked mean pooling in the estimator.
+    patch_masks = DinoPoseEstimator._to_patch_mask(np.stack(masks_cropped))   # [N, num_patches]
+
     # Store SAM-3D TCO_init matrices in the renderer for get_z_from_pointcloud
     return {
-        "model_name": model_name,
-        "templates":  templates_cropped,                               # [N,3,H,W]
-        "depths":     depths,                                          # list of [H,W] Tensor
-        "intrinsic":  torch.from_numpy(K_SAM3D).float(),
-        "_tcoinits":  tcoinits,                                        # list of (4,4) np arrays
-        "_renderer":  renderer,                                        # kept for fine-pose use
+        "model_name":   model_name,
+        "templates":    templates_cropped,                             # [N,3,H,W]
+        "depths":       depths,                                        # list of [H,W] Tensor
+        "intrinsic":    torch.from_numpy(K_SAM3D).float(),
+        "patch_masks":  patch_masks,                                   # [N, num_patches] bool
+        "_tcoinits":    tcoinits,                                      # list of (4,4) np arrays
+        "_renderer":    renderer,                                      # kept for fine-pose use
     }
 
 

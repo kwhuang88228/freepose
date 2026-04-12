@@ -39,7 +39,7 @@ class DinoPoseEstimatorSam3d(DinoPoseEstimator):
             self.mesh_poses = sam3d_tcoinits  # override with SAM-3D extrinsics
 
     def forward(self, proposal, template_dict, K, bbox, est_scale,
-                layer=22, batch_size=128, return_query_feat=False):
+                layer=22, batch_size=128, return_query_feat=False, proposal_mask=None):
         """Same flow as DinoPoseEstimator.forward but adapted for SAM-3D depth."""
         if self.cache_size > 0:
             feats_template = self._get_template_features(template_dict, layer=layer, batch_size=batch_size)
@@ -50,11 +50,22 @@ class DinoPoseEstimatorSam3d(DinoPoseEstimator):
             proposal[None].to('cuda', dtype=torch.bfloat16), layer=layer, feature_type='patch'
         )
         signature = 'b n d, b n d -> b n'
-        scores = einsum(
+
+        # Per-patch cosine similarities: [N_templates, num_patches]
+        per_patch_sim = einsum(
             F.normalize(feats_template, dim=-1),
             F.normalize(query_feat, dim=-1),
             signature,
-        ).mean(dim=-1)
+        )
+
+        # Masked mean: average only over query foreground patches (constant across all templates).
+        if proposal_mask is not None:
+            q_patch_mask = self._to_patch_mask(proposal_mask)                    # [num_patches]
+            q_patch_mask = q_patch_mask.to(per_patch_sim.device).unsqueeze(0)   # [1, num_patches]
+            count = q_patch_mask.float().sum().clamp(min=1)
+            scores = (per_patch_sim * q_patch_mask.float()).sum(dim=-1) / count
+        else:
+            scores = per_patch_sim.mean(dim=-1)
 
         top_scores, top_indices = torch.topk(scores, 3)
         top_scores  = top_scores.float().cpu().numpy()
@@ -123,7 +134,7 @@ class DinoOnlinePoseEstimatorSam3d(nn.Module):
         if prev_pose is None:
             coarse_results = self.coarse_estimator.forward(
                 proposal, template_dict, K, bbox, est_scale, layer, batch_size,
-                return_query_feat=True,
+                return_query_feat=True, proposal_mask=proposal_mask,
             )
             query_feat = coarse_results['query_feat']
             prev_pose  = coarse_results['TCO'][0]
@@ -150,14 +161,19 @@ class DinoOnlinePoseEstimatorSam3d(nn.Module):
         # Render fine poses on demand — no scale applied (splat is unit-normalised)
         renders = self.fine_renderer.render_from_poses(gs, close_idxs.tolist())
         ren_props, tcoinits_fine, masks_fine = self.fine_renderer.generate_proposals(renders)
-        masks_fine_t = torch.tensor(np.array(masks_fine)).bool()
 
         feats_fine = self.feature_extractor(
             ren_props.cuda().half(), layer=layer, feature_type='patch'
         )
 
         signature = 'b n d, b n d -> b n'
-        scores = einsum(query_feat, F.normalize(feats_fine, dim=-1), signature).mean(dim=-1)
+        per_patch_sim = einsum(query_feat, F.normalize(feats_fine, dim=-1), signature)
+
+        # Masked mean over query foreground patches only (constant denominator across templates).
+        q_patch_mask = DinoPoseEstimator._to_patch_mask(proposal_mask)              # [num_patches]
+        q_patch_mask = q_patch_mask.to(per_patch_sim.device).unsqueeze(0)           # [1, num_patches]
+        count = q_patch_mask.float().sum().clamp(min=1)
+        scores = (per_patch_sim * q_patch_mask.float()).sum(dim=-1) / count
 
         top_index  = torch.argmax(scores).item()
         top_score  = scores[top_index]

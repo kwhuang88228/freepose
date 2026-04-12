@@ -4,7 +4,11 @@ from tqdm import tqdm
 
 def frames_to_video(frames_dir: Path, output_path: Path, fps: int = 30) -> None:
     """Create a video from a directory of frames."""
-    frames = sorted(frames_dir.glob("*.jpg"))
+    frames = sorted(
+    list(frames_dir.glob("*.jpg")) +
+    list(frames_dir.glob("*.jpeg")) +
+    list(frames_dir.glob("*.png"))
+)
     if not frames:
         raise ValueError(f"No frames found in {frames_dir}")
     
@@ -25,10 +29,26 @@ def frames_to_video(frames_dir: Path, output_path: Path, fps: int = 30) -> None:
 
 
 if __name__ == "__main__":
-    root_dir = Path("/share/hariharan/kh775/code/freepose/data/results/hd_epic_clips/v2")
+    # root_dir = Path("/share/hariharan/kh775/code/freepose/data/results/hd_epic_clips/v2")
+
+    # for video_dir in tqdm(root_dir.iterdir()):
+    #     # frames_dir = root_dir / video_dir / f"viz_bbox_{video_dir.name}-tracked"
+    #     frames_dir = root_dir / video_dir / "sam2_masks"
+    #     output_path = root_dir / video_dir / f"{video_dir.name}_mask.mp4"
+    #     frames_to_video(frames_dir, output_path)
+
+    root_dir = Path("/share/hariharan/kh775/code/freepose/data/results/sam3d/num_template=4800")
 
     for video_dir in tqdm(root_dir.iterdir()):
-        # frames_dir = root_dir / video_dir / f"viz_bbox_{video_dir.name}-tracked"
-        frames_dir = root_dir / video_dir / "sam2_masks"
-        output_path = root_dir / video_dir / f"{video_dir.name}_mask.mp4"
+        frames_dir = root_dir / video_dir / "04_coarse_poses" / "bbox3d"
+        output_path = root_dir / video_dir / f"{video_dir.name}_coarse_poses_bbox3d.mp4"
+        frames_to_video(frames_dir, output_path)
+        frames_dir = root_dir / video_dir / "04_coarse_poses" / "gaussian"
+        output_path = root_dir / video_dir / f"{video_dir.name}_coarse_poses_gaussian.mp4"
+        frames_to_video(frames_dir, output_path)
+        frames_dir = root_dir / video_dir / "05_tracked" / "bbox3d"
+        output_path = root_dir / video_dir / f"{video_dir.name}_tracked_bbox3d.mp4"
+        frames_to_video(frames_dir, output_path)
+        frames_dir = root_dir / video_dir / "05_tracked" / "cotracker"
+        output_path = root_dir / video_dir / f"{video_dir.name}_tracked_cotracker.mp4"
         frames_to_video(frames_dir, output_path)

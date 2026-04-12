@@ -1,112 +1,96 @@
 import base64
+import os
 import subprocess
 import tempfile
-from pathlib import Path
+
+videos = [
+    "P01-20240202-110250_3_knife",
+    "P01-20240202-161948_19_spatula",
+    "P01-20240202-171220_0_ladle",
+    "P01-20240202-195538_6_spoon",
+]
+
+suffixes = ["coarse_poses_bbox3d", "coarse_poses_gaussian", "tracked_bbox3d"]
+base_dir = "/share/hariharan/kh775/code/freepose/data/results/sam3d/num_template=4800"
 
 
-def encode_video(path: Path) -> str:
-    """Re-encode to H.264 (browser-compatible) and return a base64 data URI."""
+def encode_video(path):
+    """Re-encode to H.264 with faststart, then base64-encode for browser embedding."""
     with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
-        tmp_path = Path(tmp.name)
-    subprocess.run(
-        [
-            "ffmpeg", "-y", "-i", str(path),
-            "-vcodec", "libx264", "-pix_fmt", "yuv420p",
-            "-acodec", "aac", "-movflags", "+faststart",
-            str(tmp_path),
-        ],
-        check=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    data = base64.b64encode(tmp_path.read_bytes()).decode("utf-8")
-    tmp_path.unlink()
-    return f"data:video/mp4;base64,{data}"
+        tmp_path = tmp.name
+    try:
+        subprocess.run(
+            [
+                "ffmpeg", "-y", "-i", path,
+                "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+                "-movflags", "+faststart",
+                "-an",  # no audio
+                tmp_path,
+            ],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        with open(tmp_path, "rb") as f:
+            data = f.read()
+    finally:
+        os.unlink(tmp_path)
+    return base64.b64encode(data).decode("utf-8")
 
 
-def make_html(videos_dir: Path, output_path: Path) -> None:
-    video_dirs = sorted(videos_dir.iterdir())
-
-    rows = []
-    for video_dir in video_dirs:
-        if not video_dir.is_dir():
-            continue
-        name = video_dir.name
-        bbox_mp4 = video_dir / f"{name}_bbox.mp4"
-        orig_mp4 = video_dir / f"{name}.mp4"
-        bbox_2d_mp4 = video_dir / f"{name}_2d_bbox.mp4"
-        mask_mp4 = video_dir / f"{name}_mask.mp4"
-        if not bbox_mp4.exists() or not orig_mp4.exists():
-            print(f"Skipping {name}: missing video files")
-            continue
-
-        print(f"Encoding {name}...")
-        orig_src = encode_video(orig_mp4)
-        bbox_src = encode_video(bbox_mp4)
-        bbox_2d_src = encode_video(bbox_2d_mp4) if bbox_2d_mp4.exists() else None
-        mask_src = encode_video(mask_mp4) if mask_mp4.exists() else None
-
-        extra_tds = ""
-        if bbox_2d_src:
-            extra_tds += f"""
-      <td>
-        <video width="640" controls>
-          <source src="{bbox_2d_src}" type="video/mp4">
-        </video>
-      </td>"""
-        if mask_src:
-            extra_tds += f"""
-      <td>
-        <video width="640" controls>
-          <source src="{mask_src}" type="video/mp4">
-        </video>
-      </td>"""
-
-        ncols = 2 + (1 if bbox_2d_src else 0) + (1 if mask_src else 0)
-        rows.append(f"""
+rows_html = []
+for video_name in videos:
+    cells = []
+    for suffix in suffixes:
+        mp4_path = os.path.join(base_dir, video_name, f"{video_name}_{suffix}.mp4")
+        b64 = encode_video(mp4_path)
+        cell = f"""
+        <td style="padding:8px; text-align:center;">
+          <video controls width="480">
+            <source src="data:video/mp4;base64,{b64}" type="video/mp4">
+          </video>
+        </td>"""
+        cells.append(cell)
+    row = f"""
     <tr>
-      <td colspan="{ncols}"><b>{name}</b></td>
-    </tr>
-    <tr>
-      <td>
-        <video width="640" controls>
-          <source src="{orig_src}" type="video/mp4">
-        </video>
-      </td>
-      <td>
-        <video width="640" controls>
-          <source src="{bbox_src}" type="video/mp4">
-        </video>
-      </td>{extra_tds}
-    </tr>""")
+      <td style="padding:8px; font-weight:bold; white-space:nowrap; vertical-align:middle;">{video_name}</td>
+      {"".join(cells)}
+    </tr>"""
+    rows_html.append(row)
+    print(f"Encoded {video_name}")
 
-    html = f"""<!DOCTYPE html>
+html = f"""<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
   <title>FreePose Results</title>
   <style>
     body {{ font-family: sans-serif; padding: 20px; }}
-    table {{ border-collapse: collapse; width: 100%; }}
-    td {{ padding: 10px; vertical-align: top; }}
-    tr:nth-child(odd) {{ background: #f5f5f5; }}
-    video {{ display: block; }}
-    p {{ margin: 0 0 4px; font-weight: bold; color: #555; }}
+    table {{ border-collapse: collapse; }}
+    tr:nth-child(even) {{ background: #f5f5f5; }}
+    td {{ border: 1px solid #ddd; vertical-align: top; }}
   </style>
 </head>
 <body>
-  <h1>FreePose Results v2</h1>
+  <h2>FreePose Results — num_template=4800</h2>
   <table>
-{"".join(rows)}
+    <thead>
+      <tr>
+        <th style="padding:8px;">Video</th>
+        <th style="padding:8px;">coarse_poses_bbox3d</th>
+        <th style="padding:8px;">coarse_poses_gaussian</th>
+        <th style="padding:8px;">tracked_bbox3d</th>
+      </tr>
+    </thead>
+    <tbody>
+      {"".join(rows_html)}
+    </tbody>
   </table>
 </body>
-</html>
-"""
-    output_path.write_text(html)
-    print(f"HTML saved to {output_path}")
+</html>"""
 
+out_path = os.path.join(os.path.dirname(__file__), "freepose_sam3d_4800_views.html")
+with open(out_path, "w") as f:
+    f.write(html)
 
-if __name__ == "__main__":
-    videos_dir = Path("/share/hariharan/kh775/code/freepose/data/results/hd_epic_clips/v2")
-    output_path = videos_dir / "index_v2.html"
-    make_html(videos_dir, output_path)
+print(f"Saved to {out_path}")

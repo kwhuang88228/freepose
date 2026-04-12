@@ -225,4 +225,11 @@ class SplatRenderer:
         templates_t = torch.stack(templates).permute(0, 3, 1, 2)   # (N, 3, H, W)
         boxes_t     = torch.tensor(np.array(boxes))
         templates_cropped = rgb_proposal_processor(templates_t, boxes_t)
-        return templates_cropped, tcoinits, masks
+
+        # Crop masks with the same transform so their spatial layout matches
+        # templates_cropped (i.e. what DINOv2 will actually see).
+        masks_t = torch.from_numpy(np.stack(masks).astype(np.float32)).unsqueeze(1)  # (N, 1, H, W)
+        cropped_masks_t = rgb_proposal_processor(masks_t, boxes_t)                   # (N, 1, H, W)
+        cropped_masks = [(cropped_masks_t[i, 0].numpy() > 0.5) for i in range(len(masks))]
+
+        return templates_cropped, tcoinits, cropped_masks
