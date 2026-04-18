@@ -173,11 +173,9 @@ cython_debug/
 /slurm-*.out
 
 # Additional directories to ignore
-/bop_toolkit/
 /checkpoints/
-/data/
 /sam-3d-objects/
-/segment-anything-2/
+/data/
 *.mp4
 *.ply
 *.png
