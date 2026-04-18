@@ -39,7 +39,8 @@ class DinoPoseEstimatorSam3d(DinoPoseEstimator):
             self.mesh_poses = sam3d_tcoinits  # override with SAM-3D extrinsics
 
     def forward(self, proposal, template_dict, K, bbox, est_scale,
-                layer=22, batch_size=128, return_query_feat=False, proposal_mask=None):
+                layer=22, batch_size=128, return_query_feat=False, proposal_mask=None,
+                use_query_fg_patches=True, use_template_fg_patches=False):
         """Same flow as DinoPoseEstimator.forward but adapted for SAM-3D depth."""
         if self.cache_size > 0:
             feats_template = self._get_template_features(template_dict, layer=layer, batch_size=batch_size)
@@ -58,16 +59,26 @@ class DinoPoseEstimatorSam3d(DinoPoseEstimator):
             signature,
         )
 
-        # Masked mean: average only over query foreground patches (constant across all templates).
-        if proposal_mask is not None:
-            q_patch_mask = self._to_patch_mask(proposal_mask)                    # [num_patches]
-            q_patch_mask = q_patch_mask.to(per_patch_sim.device).unsqueeze(0)   # [1, num_patches]
-            count = q_patch_mask.float().sum().clamp(min=1)
-            scores = (per_patch_sim * q_patch_mask.float()).sum(dim=-1) / count
+        # Build effective patch mask from enabled options (AND if both active).
+        N = per_patch_sim.shape[0]
+        effective_mask = None
+
+        if use_query_fg_patches and proposal_mask is not None:
+            q_patch_mask = self._to_patch_mask(proposal_mask)                      # [num_patches]
+            q_patch_mask = q_patch_mask.to(per_patch_sim.device)
+            effective_mask = q_patch_mask.unsqueeze(0).expand(N, -1).clone()       # [N, num_patches]
+
+        if use_template_fg_patches and 'patch_masks' in template_dict:
+            tmpl_masks = template_dict['patch_masks'].to(per_patch_sim.device)     # [N, num_patches]
+            effective_mask = (effective_mask & tmpl_masks) if effective_mask is not None else tmpl_masks
+
+        if effective_mask is not None:
+            count = effective_mask.float().sum(dim=-1).clamp(min=1)                # [N]
+            scores = (per_patch_sim * effective_mask.float()).sum(dim=-1) / count
         else:
             scores = per_patch_sim.mean(dim=-1)
 
-        top_scores, top_indices = torch.topk(scores, 3)
+        top_scores, top_indices = torch.topk(scores, 5)
         top_scores  = top_scores.float().cpu().numpy()
         top_indices = top_indices.cpu().numpy()
 
@@ -77,7 +88,8 @@ class DinoPoseEstimatorSam3d(DinoPoseEstimator):
             'proposal': proposal,
             'K': K,
             'bbox': bbox,
-            'retrieved_proposals': [template_dict['templates'][idx] for idx in top_indices],
+            'retrieved_proposals':    [template_dict['templates'][idx] for idx in top_indices],
+            'retrieved_template_ids': top_indices,  # (5,) int, indices 0..599 matching templates_cropped/
         }
 
         K_render = template_dict['intrinsic'].numpy()  # pixel-space K of SAM-3D render
@@ -175,8 +187,10 @@ class DinoOnlinePoseEstimatorSam3d(nn.Module):
         count = q_patch_mask.float().sum().clamp(min=1)
         scores = (per_patch_sim * q_patch_mask.float()).sum(dim=-1) / count
 
-        top_index  = torch.argmax(scores).item()
-        top_score  = scores[top_index]
+        k = min(5, scores.shape[0])
+        top_scores, top_indices = torch.topk(scores, k)
+        top_index = top_indices[0].item()
+        top_score = top_scores[0]
 
         _, depth_metric, tcoinit = renders[top_index]
         K_render = template_dict['intrinsic'].numpy()
@@ -186,9 +200,10 @@ class DinoOnlinePoseEstimatorSam3d(nn.Module):
         TCO = get_z_from_pointcloud(bbox, point_cloud, K, tcoinit)
 
         return {
-            'TCO':      [TCO],
-            'scores':   [top_score.float().cpu().numpy()],
-            'proposal': proposal,
-            'K':        K,
-            'bbox':     bbox,
+            'TCO':                [TCO],
+            'scores':             [top_score.float().cpu().numpy()],
+            'proposal':           proposal,
+            'K':                  K,
+            'bbox':               bbox,
+            'retrieved_templates': ren_props[top_indices.cpu()],  # [5, 3, H, W] float 0-1
         }

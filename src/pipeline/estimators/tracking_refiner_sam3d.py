@@ -292,7 +292,7 @@ class TrackingRefinerSam3d:
         with torch.no_grad():
             pred_tracks, pred_visibility = self.cotracker(
                 video,
-                queries=torch.from_numpy(query_points)[None],
+                queries=torch.from_numpy(query_points)[None].to(self.cotracker_device),
                 backward_tracking=True,
             )
         return pred_tracks.squeeze(0).cpu().numpy(), pred_visibility.squeeze(0).cpu().numpy()

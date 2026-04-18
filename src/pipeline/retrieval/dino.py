@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torchvision.transforms as T
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -13,6 +14,15 @@ class DINOv2FeatureExtractor(nn.Module):
 
     def forward(self, images, layer=22, feature_type='cls'):
         with torch.inference_mode():
+            # DINOv2 requires spatial dims to be multiples of patch_size (14).
+            # Snap down to the nearest valid size to avoid the assertion error.
+            patch_size = self.model.patch_embed.patch_size[0]
+            h, w = images.shape[-2:]
+            new_h = (h // patch_size) * patch_size
+            new_w = (w // patch_size) * patch_size
+            if new_h != h or new_w != w:
+                images = F.interpolate(images, size=(new_h, new_w),
+                                       mode='bilinear', align_corners=False)
             x = self.model.prepare_tokens_with_masks(self.transform(images), None)
 
             for blk_idx, blk in enumerate(self.model.blocks):

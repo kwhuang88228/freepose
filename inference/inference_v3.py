@@ -27,7 +27,6 @@ Debug outputs (per stage):
     data/results/sam3d/<video_name>/03_splats/
     data/results/sam3d/<video_name>/04_coarse_poses/
     data/results/sam3d/<video_name>/05_tracked/
-    data/results/sam3d/<video_name>/06_vis/
 """
 
 import argparse
@@ -77,6 +76,22 @@ def main():
     parser.add_argument("--no-skip_completed", dest="skip_completed", action="store_false")
     parser.add_argument("--num_templates", type=int, default=600,
                         help="Number of Hammersley template views rendered for pose matching (default: 600)")
+    parser.add_argument("--mask_query", action="store_true", default=True,
+                        help="Mask the query crop to the object foreground before template retrieval (default: True). "
+                             "Pass --no-mask_query to use the full unmasked RGB crop.")
+    parser.add_argument("--no-mask_query", dest="mask_query", action="store_false")
+    parser.add_argument("--mask_template", action="store_true", default=False,
+                        help="Zero out background pixels in rendered template images before feature extraction (default: False).")
+    parser.add_argument("--no-mask_template", dest="mask_template", action="store_false")
+    parser.add_argument("--query_fg_patches", action="store_true", default=True,
+                        help="Average similarity only over query foreground patches (default: True). "
+                             "Pass --no-query_fg_patches to use all query patches.")
+    parser.add_argument("--no-query_fg_patches", dest="query_fg_patches", action="store_false")
+    parser.add_argument("--template_fg_patches", action="store_true", default=False,
+                        help="Average similarity only over each template's foreground patches (default: False).")
+    parser.add_argument("--no-template_fg_patches", dest="template_fg_patches", action="store_false")
+    parser.add_argument("--dino_layer", type=int, default=22,
+                        help="DINOv2 layer number to use for patch-feature extraction (default: 22)")
     args = parser.parse_args()
 
     video_path = Path(args.video).resolve()
@@ -97,7 +112,14 @@ def main():
     # Derived file names — use "sam3d" prefix throughout (no BASE_PROPS mesh-retrieval prefix)
     props     = f"sam3d_{video}.json"
     scaled    = f"sam3d_{video}_gpt4_scaled.json"
-    poses_csv = f"sam3d_{video}_gpt4_scaled_dinopose_layer_22_bbext_0.05_depth_zoedepth.csv"
+    poses_csv = (
+        f"sam3d_{video}_gpt4_scaled_dinopose_layer_{args.dino_layer}_bbext_0.05_depth_zoedepth"
+        f"_qimg{'m' if args.mask_query else 'u'}"
+        f"_timg{'m' if args.mask_template else 'u'}"
+        f"_qpatch{'fg' if args.query_fg_patches else 'all'}"
+        f"_tpatch{'fg' if args.template_fg_patches else 'all'}"
+        f".csv"
+    )
     output    = FREEPOSE_ROOT / "data" / "results" / "sam3d" / video / f"{video}-tracked-sam3d.csv"
 
     results_dir = FREEPOSE_ROOT / "data" / "results" / "sam3d" / video
@@ -124,20 +146,30 @@ def main():
     if skip and poses_path.exists():
         print(f"Stage 3: output already exists ({poses_csv}), skipping.")
     else:
-        run(["python", "-m", "scripts.dino_inference_video_sam3d", "--video", video, "--proposals", scaled,
-             "--num_templates", str(args.num_templates)])
+        stage3_cmd = ["python", "-m", "scripts.dino_inference_video_sam3d", "--video", video,
+                      "--proposals", scaled, "--num_templates", str(args.num_templates),
+                      "--layer", str(args.dino_layer)]
+        if not args.mask_query:
+            stage3_cmd += ["--no-mask_query"]
+        if args.mask_template:
+            stage3_cmd += ["--mask_template"]
+        if not args.query_fg_patches:
+            stage3_cmd += ["--no-query_fg_patches"]
+        if args.template_fg_patches:
+            stage3_cmd += ["--template_fg_patches"]
+        run(stage3_cmd)
 
-    # Stage 4: Refine via 2D-3D point tracking + PnP, then smooth R and t temporally
-    if skip and output.exists():
-        print(f"Stage 4: output already exists ({output.name}), skipping.")
-    else:
-        run([
-            "python", "-m", "scripts.smooth_poses_video_sam3d",
-            "--video", video,
-            "--proposals", scaled,
-            "--poses", poses_csv,
-            "--vis"
-        ])
+    # # Stage 4: Refine via 2D-3D point tracking + PnP, then smooth R and t temporally
+    # if skip and output.exists():
+    #     print(f"Stage 4: output already exists ({output.name}), skipping.")
+    # else:
+    #     run([
+    #         "python", "-m", "scripts.smooth_poses_video_sam3d",
+    #         "--video", video,
+    #         "--proposals", scaled,
+    #         "--poses", poses_csv,
+    #         "--vis"
+    #     ])
 
     print(f"\nDone. 6D pose trajectory written to:\n  {output}")
 

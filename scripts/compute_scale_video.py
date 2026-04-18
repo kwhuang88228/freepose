@@ -38,7 +38,7 @@ if __name__ == "__main__":
 
     clip = CLIPFeatureExtractor().to(device, dtype=torch.bfloat16)
     scale_estimator = GPT4ScaleEstimator(clip, scale_file="data/gpt4_scales.json")
-    zoe = torch.hub.load("isl-org/ZoeDepth", "ZoeD_N", pretrained=True)
+    zoe = torch.hub.load("isl-org/ZoeDepth", "ZoeD_N", pretrained=True).to(device)
 
     image_path = frame_paths[0]
     image = cv2.cvtColor(cv2.imread(str(image_path)), cv2.COLOR_BGR2RGB).astype(
@@ -78,8 +78,9 @@ if __name__ == "__main__":
         out = {"boxes": boxes, "masks": masks}
         proposals = Proposals(image, out, 224, bbox_extend=0.05)
 
+        with torch.inference_mode():
+            depth_pred = zoe.infer(proposals.image[None].to(device))[0, 0].detach().cpu().numpy()
         with torch.inference_mode(), torch.autocast(device, dtype=torch.bfloat16):
-            depth_pred = zoe.infer(proposals.image[None])[0, 0].detach().cpu().numpy()
             img_pred_scales = scale_estimator.estimate(proposals, depth_pred, K)
 
         for i, scale in enumerate(img_pred_scales):

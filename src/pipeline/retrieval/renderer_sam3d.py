@@ -13,6 +13,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from PIL import Image, ImageDraw
 
 from src.utils.bbox_utils import CropResizePad
 
@@ -30,13 +31,13 @@ from sam3d_objects.model.backbone.tdfy_dit.utils.render_utils import (
 from sam3d_objects.model.backbone.tdfy_dit.utils.random_utils import sphere_hammersley_sequence
 
 # ── SAM-3D rendering constants (must match the training camera convention) ────
-SAM3D_RESOLUTION = 420
+SAM3D_RESOLUTION = 512
 SAM3D_FOV_DEG    = 40
 SAM3D_R          = 2.0
 SAM3D_NEAR       = 0.8
 SAM3D_FAR        = 1.6
 
-# Pixel-space intrinsic matrix for SAM-3D rendering camera at 420×420, fov=40°
+# Pixel-space intrinsic matrix for SAM-3D rendering camera at 512×512, fov=40°
 _fov_rad = math.radians(SAM3D_FOV_DEG)
 _f = SAM3D_RESOLUTION / (2.0 * math.tan(_fov_rad / 2.0))
 K_SAM3D = np.array(
@@ -191,14 +192,36 @@ class SplatRenderer:
         return np.array([x_indices.min(), y_indices.min(), x_indices.max(), y_indices.max()])
 
     @staticmethod
+    def _save_debug_images(tensor: torch.Tensor, subdir: Path, is_mask: bool = False) -> None:
+        """Save each frame of a (N, C, H, W) tensor as a JPEG in *subdir*."""
+        subdir.mkdir(parents=True, exist_ok=True)
+        arr = tensor.detach().cpu().numpy()          # (N, C, H, W), float 0-1
+        for i, frame in enumerate(arr):
+            if is_mask:
+                # (1, H, W) → (H, W), scale to [0, 255]
+                img_np = (frame[0] * 255).clip(0, 255).astype(np.uint8)
+                Image.fromarray(img_np, mode="L").save(subdir / f"{i:04d}.jpg")
+            else:
+                # (3, H, W) → (H, W, 3), scale to [0, 255]
+                img_np = (frame.transpose(1, 2, 0) * 255).clip(0, 255).astype(np.uint8)
+                Image.fromarray(img_np, mode="RGB").save(subdir / f"{i:04d}.jpg")
+
+    @staticmethod
     def generate_proposals(
         res: list[tuple],
         resolution: int = SAM3D_RESOLUTION,
         bbox_extend: float = 0,
+        debug_dir: "str | Path | None" = None,
     ) -> tuple:
         """Convert render results to cropped template tensors.
 
         Mirrors MeshRenderer.generate_proposals().
+
+        Args:
+            debug_dir: If given, each intermediate variable from the crop/mask
+                       pipeline is saved as JPEG images under a named subdirectory
+                       of *debug_dir* (e.g. debug_dir/templates_t/0000.jpg).
+                       boxes_t is saved as boxes_t/boxes_t.txt.
 
         Returns:
             (templates_cropped: Tensor [N, 3, H, W],
@@ -212,7 +235,7 @@ class SplatRenderer:
             mask = depth > 0
 
             if mask.sum() < 100:
-                mask[105:315, 105:315] = True
+                mask[128:384, 128:384] = True
 
             bbox = SplatRenderer.mask_to_bbox(mask)
 
@@ -224,12 +247,53 @@ class SplatRenderer:
 
         templates_t = torch.stack(templates).permute(0, 3, 1, 2)   # (N, 3, H, W)
         boxes_t     = torch.tensor(np.array(boxes))
-        templates_cropped = rgb_proposal_processor(templates_t, boxes_t)
+        templates_cropped = rgb_proposal_processor(templates_t, boxes_t)   # this maximizes the object's pixel area in the cropped template, which is what DINOv2 will see.
 
         # Crop masks with the same transform so their spatial layout matches
         # templates_cropped (i.e. what DINOv2 will actually see).
         masks_t = torch.from_numpy(np.stack(masks).astype(np.float32)).unsqueeze(1)  # (N, 1, H, W)
-        cropped_masks_t = rgb_proposal_processor(masks_t, boxes_t)                   # (N, 1, H, W)
-        cropped_masks = [(cropped_masks_t[i, 0].numpy() > 0.5) for i in range(len(masks))]
+        masks_cropped_t = rgb_proposal_processor(masks_t, boxes_t)                   # (N, 1, H, W)
+        masks_cropped = [(masks_cropped_t[i, 0].numpy() > 0.5) for i in range(len(masks))]
 
-        return templates_cropped, tcoinits, cropped_masks
+        # ── Debug dumps ───────────────────────────────────────────────────────
+        if debug_dir is not None:
+            _dbg = Path(debug_dir)
+            # RGB tensors with bounding boxes overlaid → JPEG per frame
+            _tmpl_dir = _dbg / "templates_t"
+            _tmpl_dir.mkdir(parents=True, exist_ok=True)
+            _tmpl_arr = templates_t.detach().cpu().numpy()   # (N, 3, H, W), float 0-1
+            _boxes_np = boxes_t.numpy()                      # (N, 4): x0 y0 x1 y1
+            for _i, _frame in enumerate(_tmpl_arr):
+                _img = Image.fromarray(
+                    (_frame.transpose(1, 2, 0) * 255).clip(0, 255).astype(np.uint8), mode="RGB"
+                )
+                _draw = ImageDraw.Draw(_img)
+                x0, y0, x1, y1 = _boxes_np[_i]
+                _draw.rectangle([x0, y0, x1, y1], outline=(255, 0, 0), width=2)
+                _img.save(_tmpl_dir / f"{_i:04d}.jpg")
+            SplatRenderer._save_debug_images(templates_cropped, _dbg / "templates_cropped")
+            # Mask tensors with bounding boxes overlaid → grayscale JPEG per frame
+            _mask_dir = _dbg / "masks_t"
+            _mask_dir.mkdir(parents=True, exist_ok=True)
+            _masks_arr = masks_t.detach().cpu().numpy()      # (N, 1, H, W), float 0-1
+            for _i, _mframe in enumerate(_masks_arr):
+                _mimg = Image.fromarray(
+                    (_mframe[0] * 255).clip(0, 255).astype(np.uint8), mode="L"
+                ).convert("RGB")
+                _draw = ImageDraw.Draw(_mimg)
+                x0, y0, x1, y1 = _boxes_np[_i]
+                _draw.rectangle([x0, y0, x1, y1], outline=(255, 0, 0), width=2)
+                _mimg.save(_mask_dir / f"{_i:04d}.jpg")
+            SplatRenderer._save_debug_images(masks_cropped_t,  _dbg / "masks_cropped_t", is_mask=True)
+            # # Bounding boxes → plain text (one row per frame: x0 y0 x1 y1)
+            # _boxes_dir = _dbg / "boxes_t"
+            # _boxes_dir.mkdir(parents=True, exist_ok=True)
+            # np.savetxt(_boxes_dir / "boxes_t.txt", boxes_t.numpy(), fmt="%.2f",
+            #            header="x0 y0 x1 y1")
+            # masks_cropped (bool list) → grayscale JPEG per frame
+            _cm_dir = _dbg / "masks_cropped"
+            _cm_dir.mkdir(parents=True, exist_ok=True)
+            for i, cm in enumerate(masks_cropped):
+                Image.fromarray((cm * 255).astype(np.uint8), mode="L").save(_cm_dir / f"{i:04d}.jpg")
+
+        return templates_cropped, tcoinits, masks_cropped

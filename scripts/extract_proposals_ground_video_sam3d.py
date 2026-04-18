@@ -142,7 +142,7 @@ def track_with_sam2(video_dir, bboxes, scores, frame_paths, reverse=False, devic
 
     if ignore_objects:
         logger.info(f"Ignoring objects: {ignore_objects}")
-        
+
     obj_idxs = sorted(list(ignore_objects))[::-1]
     for output in tracking_output.values():
         for idx in obj_idxs:
@@ -150,8 +150,8 @@ def track_with_sam2(video_dir, bboxes, scores, frame_paths, reverse=False, devic
             output["masks"].pop(idx)
             output["scores"].pop(idx)
         valid_boxes = [b if b is not None else np.zeros(4) for b in output["boxes"]]
-        output["boxes"] = torch.tensor(np.array(valid_boxes)).cuda()
-        output["masks"] = torch.stack(output["masks"]).cuda()
+        output["boxes"] = torch.tensor(np.array(valid_boxes)).to(device)
+        output["masks"] = torch.stack(output["masks"]).to(device)
 
     return tracking_output
 
@@ -204,8 +204,16 @@ def _render_splat_views(gs, output_path: Path, n_views: int = 6):
     pitchs    = [c[1] for c in cams]
     extrinsics, intrinsics = yaw_pitch_r_fov_to_extrinsics_intrinsics(yaws, pitchs, rs=2, fovs=40)
     result    = render_frames(
-        gs, extrinsics, intrinsics,
-        options={"resolution": 420, "near": 0.8, "far": 1.6, "bg_color": (0, 0, 0), "backend": "gsplat"},
+        gs, 
+        extrinsics, 
+        intrinsics,
+        options={
+            "resolution": 512, 
+            "near": 0.8, 
+            "far": 1.6, 
+            "bg_color": (0, 0, 0), 
+            "backend": "gsplat"
+        },
         verbose=False,
     )
     strip = np.concatenate(result["color"], axis=1)
@@ -258,10 +266,10 @@ if __name__ == "__main__":
     )
 
     # Save SAM2 box/mask overlays to results_dir (pipeline convention)
-    sam2_boxes_dir = results_dir / "sam2_boxes"
-    sam2_masks_dir = results_dir / "sam2_masks"
-    masks_dir      = results_dir / "masks"
-    for d in [sam2_boxes_dir, sam2_masks_dir, masks_dir]:
+    sam2_boxes_dir = debug_tracking / "boxes"
+    sam2_masks_overlay_dir = debug_tracking / "masks_overlay"
+    sam2_binary_masks_dir      = debug_tracking / "binary_masks"
+    for d in [sam2_boxes_dir, sam2_masks_overlay_dir, sam2_binary_masks_dir]:
         d.mkdir(exist_ok=True)
 
     _colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0), (0, 255, 255)]
@@ -279,21 +287,18 @@ if __name__ == "__main__":
             x1, y1, x2, y2 = box.astype(int)
             cv2.rectangle(box_overlay, (x1, y1), (x2, y2), color, 2)
         cv2.imwrite(str(sam2_boxes_dir / f"{frame_idx:06d}.jpg"), box_overlay)
-        cv2.imwrite(str(sam2_masks_dir / f"{frame_idx:06d}.jpg"), mask_overlay)
+        cv2.imwrite(str(sam2_masks_overlay_dir / f"{frame_idx:06d}.jpg"), mask_overlay)
 
         # Raw binary masks
         for obj_idx, mask in enumerate(masks_np):
             cv2.imwrite(
-                str(masks_dir / f"{frame_idx:06d}_mask.png"),
+                str(sam2_binary_masks_dir / f"{frame_idx:06d}_mask.png"),
                 (mask.astype(np.uint8)) * 255,
             )
 
-        # Debug: save all frames to 02_tracking/
-        cv2.imwrite(str(debug_tracking / f"{frame_idx:06d}_boxes.jpg"), box_overlay)
-
     logger.info(f"SAM2 boxes   → {sam2_boxes_dir}")
-    logger.info(f"SAM2 masks   → {sam2_masks_dir}")
-    logger.info(f"Binary masks → {masks_dir}")
+    logger.info(f"SAM2 masks   → {sam2_masks_overlay_dir}")
+    logger.info(f"SAM2 binary masks → {sam2_binary_masks_dir}")
 
     # ── Stage 1c: SAM-3D Gaussian splat generation ────────────────────────────
     splat_paths = generate_splats(image, tracking_output, args.video, device=device)
@@ -315,7 +320,15 @@ if __name__ == "__main__":
     all_proposals = {}
     for frame_idx, output in tracking_output.items():
         frame_img = cv2.cvtColor(cv2.imread(str(frame_paths[frame_idx])), cv2.COLOR_BGR2RGB).astype(np.uint8)
-        proposals = Proposals(frame_img, output, 420, 0, frame_idx, bbox_extend=0.1, mask_rgb=True)
+        proposals = Proposals(
+            frame_img,
+            output,
+            target_size=512,
+            scene_id=0,
+            frame_id=frame_idx,
+            bbox_extend=0.2,
+            mask_rgb=True
+        )
         proposals.meshes = list(splat_paths)       # one splat path per object
         proposals.scores = [1.0] * len(splat_paths)
         del proposals.features

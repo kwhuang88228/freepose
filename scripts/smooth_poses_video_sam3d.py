@@ -211,7 +211,7 @@ def predict_transforms_at_interval(
 
 
 def predict_transforms(frames, transforms, gs, K, masks):
-    tracref = TrackingRefinerSam3d(dino_device="cuda")
+    tracref = TrackingRefinerSam3d(dino_device="cuda", cotracker_device="cuda")
 
     n_inliers, _ = tracref.n_inliers_per_pose(gs, frames, K, transforms)
     start_frame  = int(np.argmax(n_inliers))
