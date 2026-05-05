@@ -50,7 +50,7 @@ def extract_frames(video_path: Path, out_dir: Path) -> int:
         ok, frame = cap.read()
         if not ok:
             break
-        cv2.imwrite(str(out_dir / f"{str(idx).zfill(6)}.jpg"), frame)
+        cv2.imwrite(str(out_dir / f"{str(idx).zfill(6)}.png"), frame)
         idx += 1
     cap.release()
     print(f"Extracted {idx} frames → {out_dir}")
@@ -109,18 +109,24 @@ def main():
     else:
         extract_frames(video_path, frames_dir)
 
-    # Derived file names — use "sam3d" prefix throughout (no BASE_PROPS mesh-retrieval prefix)
-    props     = f"sam3d_{video}.json"
-    scaled    = f"sam3d_{video}_gpt4_scaled.json"
+    # Derived file names — use "sam3d" prefix throughout (no BASE_PROPS mesh-retrieval prefix).
+    # Include the prompt slug so runs with different --track_object values don't share cached
+    # Stage 1 output (proposals JSON + Gaussian splats are object-specific).
+    prompt_slug = (
+        args.track_object.strip().replace(" ", "_").replace("/", "_")
+        if args.track_object else "objects"
+    )
+    props     = f"sam3d_{video}_{prompt_slug}.json"
+    scaled    = f"sam3d_{video}_{prompt_slug}_gpt4_scaled.json"
     poses_csv = (
-        f"sam3d_{video}_gpt4_scaled_dinopose_layer_{args.dino_layer}_bbext_0.05_depth_zoedepth"
+        f"sam3d_{video}_{prompt_slug}_gpt4_scaled_dinopose_layer_{args.dino_layer}_bbext_0.05_depth_zoedepth"
         f"_qimg{'m' if args.mask_query else 'u'}"
         f"_timg{'m' if args.mask_template else 'u'}"
         f"_qpatch{'fg' if args.query_fg_patches else 'all'}"
         f"_tpatch{'fg' if args.template_fg_patches else 'all'}"
         f".csv"
     )
-    output    = FREEPOSE_ROOT / "data" / "results" / "sam3d" / video / f"{video}-tracked-sam3d.csv"
+    output    = FREEPOSE_ROOT / "data" / "results" / "sam3d" / video / f"{video}-{prompt_slug}-tracked-sam3d.csv"
 
     results_dir = FREEPOSE_ROOT / "data" / "results" / "sam3d" / video
     scaled_path = results_dir / scaled

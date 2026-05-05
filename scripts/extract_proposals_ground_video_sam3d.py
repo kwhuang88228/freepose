@@ -158,11 +158,13 @@ def track_with_sam2(video_dir, bboxes, scores, frame_paths, reverse=False, devic
 
 # ── SAM-3D splat generation ────────────────────────────────────────────────────
 
-def generate_splats(image_frame0, tracking_output, video, device="cuda"):
+def generate_splats(image_frame0, tracking_output, video, prompt="objects", device="cuda"):
     """Generate one Gaussian splat per tracked object using SAM-3D-Objects.
 
     Uses frame-0 image + frame-0 SAM2 mask for each object.
-    Splats are saved to data/gaussian_splats/<video>/obj_<i>.ply.
+    Splats are saved to data/gaussian_splats/<video>/<prompt_slug>/obj_<i>.ply.
+    The prompt slug is included in the path so that runs with different --track_object
+    values don't reuse stale splats from prior runs.
 
     Returns:
         splat_paths: list of Path objects (relative to FREEPOSE_ROOT), one per object.
@@ -170,8 +172,9 @@ def generate_splats(image_frame0, tracking_output, video, device="cuda"):
     logger.info("Loading SAM-3D model")
     inference = Inference(SAM3D_CONFIG_PATH, compile=False)
 
+    prompt_slug = prompt.rstrip(".").strip().replace(" ", "_").replace("/", "_") or "objects"
     n_objects   = tracking_output[0]["masks"].shape[0]
-    splat_dir   = _FREEPOSE_ROOT / "data" / "gaussian_splats" / video
+    splat_dir   = _FREEPOSE_ROOT / "data" / "gaussian_splats" / video / prompt_slug
     splat_dir.mkdir(parents=True, exist_ok=True)
     splat_paths = []
 
@@ -233,11 +236,12 @@ if __name__ == "__main__":
 
     device     = "cuda" if torch.cuda.is_available() else "cpu"
     video_dir  = Path("data/datasets/videos") / args.video
-    frame_paths = sorted([p for p in video_dir.iterdir() if p.suffix.lower() in [".jpg", ".jpeg"]])
+    frame_paths = sorted([p for p in video_dir.iterdir() if p.suffix.lower() in [".png"]])
 
     results_dir = (Path("data/results/sam3d") / args.video).resolve()
     results_dir.mkdir(parents=True, exist_ok=True)
-    output_file = results_dir / f"sam3d_{args.video}.json"
+    prompt_slug = args.prompt.rstrip(".").strip().replace(" ", "_").replace("/", "_") or "objects"
+    output_file = results_dir / f"sam3d_{args.video}_{prompt_slug}.json"
 
     # Debug directories
     debug_root      = _FREEPOSE_ROOT / "data" / "results" / "sam3d" / args.video
@@ -286,8 +290,8 @@ if __name__ == "__main__":
             mask_overlay = cv2.addWeighted(mask_overlay, 1.0, colored_mask, 0.4, 0)
             x1, y1, x2, y2 = box.astype(int)
             cv2.rectangle(box_overlay, (x1, y1), (x2, y2), color, 2)
-        cv2.imwrite(str(sam2_boxes_dir / f"{frame_idx:06d}.jpg"), box_overlay)
-        cv2.imwrite(str(sam2_masks_overlay_dir / f"{frame_idx:06d}.jpg"), mask_overlay)
+        cv2.imwrite(str(sam2_boxes_dir / f"{frame_idx:06d}.png"), box_overlay)
+        cv2.imwrite(str(sam2_masks_overlay_dir / f"{frame_idx:06d}.png"), mask_overlay)
 
         # Raw binary masks
         for obj_idx, mask in enumerate(masks_np):
@@ -301,13 +305,13 @@ if __name__ == "__main__":
     logger.info(f"SAM2 binary masks → {sam2_binary_masks_dir}")
 
     # ── Stage 1c: SAM-3D Gaussian splat generation ────────────────────────────
-    splat_paths = generate_splats(image, tracking_output, args.video, device=device)
+    splat_paths = generate_splats(image, tracking_output, args.video, prompt=args.prompt, device=device)
 
     # Load splats for visualisation and render multi-view strips
     from src.pipeline.retrieval.renderer_sam3d import load_gaussian
     for obj_idx, splat_path in enumerate(splat_paths):
         ply_abs  = _FREEPOSE_ROOT / splat_path
-        views_path = debug_splats / f"obj_{obj_idx}_views.jpg"
+        views_path = debug_splats / f"obj_{obj_idx}_views.png"
         try:
             gs = load_gaussian(ply_abs, device=device)
             _render_splat_views(gs, views_path)

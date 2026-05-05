@@ -88,7 +88,7 @@ def build_template_dict(gs, model_name: str, n_poses: int = 600, bbox_extend: fl
         for _i, _pm in enumerate(patch_masks):
             _grid = _pm.reshape(_Ph, _Pw).numpy().astype(np.uint8) * 255
             _img_up = cv2.resize(_grid, (_W, _H), interpolation=cv2.INTER_NEAREST)
-            cv2.imwrite(str(_pm_dir / f"{_i:04d}.jpg"), _img_up)
+            cv2.imwrite(str(_pm_dir / f"{_i:04d}.png"), _img_up)
 
     # Append mask flag to cache key so masked/unmasked features don't collide.
     cache_name = f"{model_name}_tmpl{'m' if mask_template else 'u'}"
@@ -237,7 +237,7 @@ def _feature_mask_img(patch_mask_1d, H: int, W: int, patch_size: int = 14) -> np
 
 def main(args):
     video_dir   = (Path("data") / "datasets" / "videos" / args.video).resolve()
-    frame_names = sorted([p for p in video_dir.iterdir() if p.suffix.lower() in [".jpg", ".jpeg"]])
+    frame_names = sorted([p for p in video_dir.iterdir() if p.suffix.lower() in [".png"]])
 
     results_dir    = (Path("data") / "results" / "sam3d" / args.video).resolve()
     proposals_path = results_dir / args.proposals
@@ -320,7 +320,7 @@ def main(args):
             n_poses=args.num_templates,
             bbox_extend=args.bbox_extend,
             mask_template=args.mask_template,
-            # debug_dir=debug_dir / "render_sam3d_debug",
+            debug_dir=debug_dir / "render_sam3d_debug",
         )
         # Inject SAM-3D TCO_inits into model's mesh_poses placeholder (set later)
         splat_paths.append(splat_path)
@@ -382,7 +382,7 @@ def main(args):
             # Save the segmented object image used for template comparison
             # prop_np  = (prop.permute(1, 2, 0).cpu().float().numpy() * 255).clip(0, 255).astype(np.uint8)
             # prop_bgr = cv2.cvtColor(prop_np, cv2.COLOR_RGB2BGR)
-            # cv2.imwrite(str(debug_segmented_dir / f"{frame_idx:06d}_obj{obj_idx}.jpg"), prop_bgr)
+            # cv2.imwrite(str(debug_segmented_dir / f"{frame_idx:06d}_obj{obj_idx}.png"), prop_bgr)
 
             with torch.inference_mode(), torch.autocast(device_type=device, dtype=torch.bfloat16):
                 out = model.coarse_estimator.forward(
@@ -402,7 +402,7 @@ def main(args):
                 tmpl_np  = (tmpl.permute(1, 2, 0).cpu().float().numpy() * 255).clip(0, 255).astype(np.uint8)
                 tmpl_bgr = cv2.cvtColor(tmpl_np, cv2.COLOR_RGB2BGR)
                 cv2.imwrite(
-                    str(debug_retrieved_tmpl_dir / f"{frame_idx:06d}_obj{obj_idx}_rank{rank}_{tmpl_id:04d}_{sim:.4f}.jpg"),
+                    str(debug_retrieved_tmpl_dir / f"{frame_idx:06d}_obj{obj_idx}_rank{rank}_{tmpl_id:04d}_{sim:.4f}.png"),
                     tmpl_bgr,
                 )
 
@@ -417,26 +417,26 @@ def main(args):
                     proposals.boxes[obj_idx:obj_idx + 1],
                 )[0]
                 _raw_np = (_raw_crop.permute(1, 2, 0).cpu().float().numpy() * 255).clip(0, 255).astype(np.uint8)
-                cv2.imwrite(str(_dbg_query_raw / f"{_tag}.jpg"),
+                cv2.imwrite(str(_dbg_query_raw / f"{_tag}.png"),
                             cv2.cvtColor(_raw_np, cv2.COLOR_RGB2BGR))
 
                 # 1. query_img
                 _prop_np = (prop.permute(1, 2, 0).cpu().float().numpy() * 255).clip(0, 255).astype(np.uint8)
-                cv2.imwrite(str(_dbg_query_img / f"{_tag}.jpg"),
+                cv2.imwrite(str(_dbg_query_img / f"{_tag}.png"),
                             cv2.cvtColor(_prop_np, cv2.COLOR_RGB2BGR))
 
                 # 2. query_pixel_mask
                 _pmask_np = prop_mask.cpu().numpy().astype(np.uint8) * 255
-                cv2.imwrite(str(_dbg_query_pmask / f"{_tag}.jpg"), _pmask_np)
+                cv2.imwrite(str(_dbg_query_pmask / f"{_tag}.png"), _pmask_np)
 
                 # 3. query_img_pixel_mask_overlay
                 _pmask_bool = prop_mask.cpu().numpy().astype(bool)
-                cv2.imwrite(str(_dbg_query_overlay / f"{_tag}.jpg"),
+                cv2.imwrite(str(_dbg_query_overlay / f"{_tag}.png"),
                             _mask_overlay(_prop_np, _pmask_bool))
 
                 # 4. query_feature_mask
                 _q_fmask = DinoPoseEstimator._to_patch_mask(prop_mask.cpu().numpy())
-                cv2.imwrite(str(_dbg_query_fmask / f"{_tag}.jpg"),
+                cv2.imwrite(str(_dbg_query_fmask / f"{_tag}.png"),
                             _feature_mask_img(_q_fmask, _H, _W))
 
                 # 5-8. top-5 template outputs
@@ -448,19 +448,19 @@ def main(args):
                     _tH, _tW = _tmpl_np.shape[:2]
 
                     # 5. template_img
-                    cv2.imwrite(str(_dbg_tmpl_img / f"{_rtag}.jpg"),
+                    cv2.imwrite(str(_dbg_tmpl_img / f"{_rtag}.png"),
                                 cv2.cvtColor(_tmpl_np, cv2.COLOR_RGB2BGR))
 
                     # 6. template_pixel_mask
                     _t_pmask = tdict["_masks_pixel"][tmpl_id].astype(np.uint8) * 255
-                    cv2.imwrite(str(_dbg_tmpl_pmask / f"{_rtag}.jpg"), _t_pmask)
+                    cv2.imwrite(str(_dbg_tmpl_pmask / f"{_rtag}.png"), _t_pmask)
 
                     # 7. template_img_pixel_mask_overlay
-                    cv2.imwrite(str(_dbg_tmpl_overlay / f"{_rtag}.jpg"),
+                    cv2.imwrite(str(_dbg_tmpl_overlay / f"{_rtag}.png"),
                                 _mask_overlay(_tmpl_np, tdict["_masks_pixel"][tmpl_id]))
 
                     # 8. template_feature_mask
-                    cv2.imwrite(str(_dbg_tmpl_fmask / f"{_rtag}.jpg"),
+                    cv2.imwrite(str(_dbg_tmpl_fmask / f"{_rtag}.png"),
                                 _feature_mask_img(tdict["patch_masks"][tmpl_id], _tH, _tW))
 
             except Exception as _exc:
@@ -491,13 +491,13 @@ def main(args):
             box_np = boxes_t[obj_idx].cpu().numpy().astype(float)
             try:
                 _save_centroid_projection(img, gaussian_splats[obj_idx], K, R_np, t_np, scales[obj_idx], box_np,
-                                          debug_gaussian_dir / f"{frame_idx:06d}_obj{obj_idx}.jpg")
+                                          debug_gaussian_dir / f"{frame_idx:06d}_obj{obj_idx}.png")
             except Exception as exc:
                 logger.warning(f"Debug projection failed at frame {frame_idx}: {exc}")
 
             try:
                 _save_bbox_3d(img, gaussian_splats[obj_idx], K, R_np, t_np, scales[obj_idx], box_np,
-                              debug_bbox3d_dir / f"{frame_idx:06d}_obj{obj_idx}.jpg")
+                              debug_bbox3d_dir / f"{frame_idx:06d}_obj{obj_idx}.png")
             except Exception as exc:
                 logger.warning(f"Debug bbox3d failed at frame {frame_idx}: {exc}")
 
@@ -537,7 +537,7 @@ def main(args):
 
             ax.set_xlim(0, w)
             ax.set_ylim(h, 0)
-            plt.savefig(str(viz_dir / f"{frame_idx:06d}.jpg"),
+            plt.savefig(str(viz_dir / f"{frame_idx:06d}.png"),
                         bbox_inches="tight", pad_inches=0)
             plt.close()
 
