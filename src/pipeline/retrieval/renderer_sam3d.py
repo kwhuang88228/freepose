@@ -125,6 +125,13 @@ class SplatRenderer:
             extrinsic_to_tcoinit(e) for e in self._extrinsics
         ])  # (N, 4, 4)
 
+        # Unit-sphere Hammersley coords derived from (yaw, pitch):
+        #   x = cos(pitch)*cos(yaw),  y = cos(pitch)*sin(yaw),  z = sin(pitch)
+        self._xyz = np.array([
+            [math.cos(p) * math.cos(y), math.cos(p) * math.sin(y), math.sin(p)]
+            for y, p in zip(self._yaws, self._pitchs)
+        ])  # (N, 3)
+
     # ------------------------------------------------------------------
     def _render_at_indices(self, gs: Gaussian, indices: list[int]) -> list[tuple]:
         """Render the splat at the given pose indices.
@@ -161,7 +168,7 @@ class SplatRenderer:
                 depth_metric = pdep.astype(np.float32)
             else:
                 depth_metric = np.zeros((self.resolution, self.resolution), dtype=np.float32)
-            results.append((rgb, depth_metric, self.tcoinits[i]))
+            results.append((rgb, depth_metric, self.tcoinits[i], self._xyz[i]))
         return results
 
     # ------------------------------------------------------------------
@@ -228,10 +235,10 @@ class SplatRenderer:
              tcoinits: list of ndarray 4×4,
              masks: list of ndarray bool HxW)
         """
-        templates, boxes, tcoinits, masks = [], [], [], []
+        templates, boxes, tcoinits, masks, xyzs = [], [], [], [], []
         rgb_proposal_processor = CropResizePad(resolution, (resolution, resolution), bbox_extend=bbox_extend)
 
-        for rgb, depth, tcoinit in res:
+        for rgb, depth, tcoinit, xyz in res:
             mask = depth > 0
 
             if mask.sum() < 100:
@@ -244,6 +251,7 @@ class SplatRenderer:
             boxes.append(bbox)
             tcoinits.append(tcoinit)
             masks.append(mask)
+            xyzs.append(xyz)
 
         templates_t = torch.stack(templates).permute(0, 3, 1, 2)   # (N, 3, H, W)
         boxes_t     = torch.tensor(np.array(boxes))
@@ -270,7 +278,8 @@ class SplatRenderer:
                 _draw = ImageDraw.Draw(_img)
                 x0, y0, x1, y1 = _boxes_np[_i]
                 _draw.rectangle([x0, y0, x1, y1], outline=(255, 0, 0), width=2)
-                _img.save(_tmpl_dir / f"{_i:04d}.jpg")
+                _hx, _hy, _hz = xyzs[_i]
+                _img.save(_tmpl_dir / f"{_i:04d}_{_hx:.3f}_{_hy:.3f}_{_hz:.3f}.jpg")
             SplatRenderer._save_debug_images(templates_cropped, _dbg / "templates_cropped")
             # Mask tensors with bounding boxes overlaid → grayscale JPEG per frame
             _mask_dir = _dbg / "masks_t"

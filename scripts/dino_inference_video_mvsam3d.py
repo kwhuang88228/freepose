@@ -1,14 +1,14 @@
 """
-dino_inference_video_sam3d.py
+dino_inference_video_mvsam3d.py
 
-Stage 4 of the SAM-3D pipeline:
+Stage 4 of the MV-SAM3D pipeline:
   1. Load each object's Gaussian splat (path stored in proposals JSON 'mesh' field).
   2. Pre-render 600 Hammersley views of the splat → coarse template bank.
   3. Run DinoOnlinePoseEstimatorSam3d per frame: coarse DINOv2 matching +
      fine-pose neighbourhood refinement.
   4. Write per-frame 6D poses to CSV.
 
-Debug outputs → data/results/sam3d/<video>/04_coarse_poses/
+Debug outputs → data/results/mvsam3d/<video>/04_coarse_poses/
   Centroid scatter projections for all frames.
 """
 
@@ -175,6 +175,87 @@ def _save_bbox_3d(img, gs, K, R, t, scale, box, out_path: Path):
     plt.close(fig)
 
 
+def _save_bbox3d_axis(img, gs, K, R, t, scale, box, out_path: Path):
+    """Draw XYZ coordinate axes and 3D bounding box at the projected object centroid.
+
+    Red=X, Green=Y, Blue=Z. Axis length = half the object diameter.
+    Uses the same t re-derivation as _save_bbox_3d.
+    """
+    gs_xyz_world  = gs.get_xyz.detach().cpu().numpy()
+    xyz_min = gs_xyz_world.min(0) * scale
+    xyz_max = gs_xyz_world.max(0) * scale
+    gs_diameter_m = (gs_xyz_world.max(0) - gs_xyz_world.min(0)).max() * scale
+    bbox_px       = max(box[2] - box[0], box[3] - box[1]) + 1.0
+    z_correct     = K[0, 0] * gs_diameter_m / bbox_px
+    bb_center     = np.array([(box[0] + box[2]) / 2.0, (box[1] + box[3]) / 2.0])
+    t = np.array([
+        (bb_center[0] - K[0, 2]) * z_correct / K[0, 0],
+        (bb_center[1] - K[1, 2]) * z_correct / K[1, 1],
+        z_correct,
+    ])
+    axis_len = gs_diameter_m * 0.5
+
+    def _proj(pt_obj):
+        cam = R @ pt_obj + t
+        if cam[2] <= 0:
+            return None
+        p = K @ cam
+        return p[:2] / p[2]
+
+    origin_uv = _proj(np.zeros(3))
+    x_tip_uv  = _proj(np.array([axis_len, 0.0, 0.0]))
+    y_tip_uv  = _proj(np.array([0.0, axis_len, 0.0]))
+    z_tip_uv  = _proj(np.array([0.0, 0.0, axis_len]))
+
+    if origin_uv is None:
+        plt.imsave(str(out_path), img)
+        return
+
+    # 8 corners of the 3D bounding box in object space
+    xn, yn, zn = xyz_min
+    xx, yx, zx = xyz_max
+    corners = np.array([
+        [xn, yn, zn], [xx, yn, zn], [xx, yx, zn], [xn, yx, zn],
+        [xn, yn, zx], [xx, yn, zx], [xx, yx, zx], [xn, yx, zx],
+    ])
+    edges = {
+        "r": [(0, 1), (3, 2), (4, 5), (7, 6)],
+        "g": [(0, 3), (1, 2), (4, 7), (5, 6)],
+        "b": [(0, 4), (1, 5), (2, 6), (3, 7)],
+    }
+    corners_cam = (R @ corners.T + t[:, None]).T
+    proj = K @ corners_cam.T
+    uv = (proj[:2] / proj[2]).T
+    in_front = corners_cam[:, 2] > 0
+
+    fig, ax = plt.subplots(1, 1, figsize=(img.shape[1] / 100, img.shape[0] / 100))
+    ax.set_axis_off()
+    ax.imshow(img)
+
+    color_map = {"r": "red", "g": "lime", "b": "blue"}
+    for axis_key, edge_list in edges.items():
+        color = color_map[axis_key]
+        for i, j in edge_list:
+            if not (in_front[i] and in_front[j]):
+                continue
+            ax.plot([uv[i, 0], uv[j, 0]], [uv[i, 1], uv[j, 1]], color=color, linewidth=1.5)
+
+    for tip_uv, color in [
+        (x_tip_uv, "red"),
+        (y_tip_uv, "lime"),
+        (z_tip_uv, "blue"),
+    ]:
+        if tip_uv is None:
+            continue
+        ax.annotate("", xy=(tip_uv[0], tip_uv[1]), xytext=(origin_uv[0], origin_uv[1]),
+                    arrowprops=dict(arrowstyle="->", color=color, lw=2.0))
+    ax.scatter([origin_uv[0]], [origin_uv[1]], s=20, c="white", zorder=5)
+    ax.set_xlim(0, img.shape[1])
+    ax.set_ylim(img.shape[0], 0)
+    plt.savefig(str(out_path), bbox_inches="tight", pad_inches=0)
+    plt.close(fig)
+
+
 def _save_centroid_projection(img, gs, K, R, t, scale, box, out_path: Path, n_pts: int = 2000):
     """Scatter Gaussian centroids projected onto the image frame.
 
@@ -234,13 +315,27 @@ def _feature_mask_img(patch_mask_1d, H: int, W: int, patch_size: int = 14) -> np
     return cv2.resize(grid.astype(np.uint8) * 255, (W, H), interpolation=cv2.INTER_NEAREST)
 
 
+def _dir_to_video(frames_dir: Path, out_path: Path, fps: int = 10) -> None:
+    frames = sorted(frames_dir.glob("*.png"))
+    if not frames:
+        logger.warning(f"No frames in {frames_dir}, skipping video.")
+        return
+    first  = cv2.imread(str(frames[0]))
+    h_v, w_v = first.shape[:2]
+    writer = cv2.VideoWriter(str(out_path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (w_v, h_v))
+    for fp in frames:
+        writer.write(cv2.imread(str(fp)))
+    writer.release()
+    logger.info(f"Video saved → {out_path}")
+
+
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def main(args):
     video_dir   = (Path("data") / "datasets" / "videos" / args.video).resolve()
     frame_names = sorted([p for p in video_dir.iterdir() if p.suffix.lower() in [".png"]])
 
-    results_dir    = (Path("data") / "results" / "sam3d" / args.video).resolve()
+    results_dir    = (Path("data") / "results" / "mvsam3d" / args.video).resolve()
     proposals_path = results_dir / args.proposals
 
     pose_outputs = results_dir / args.proposals.replace(
@@ -254,13 +349,15 @@ def main(args):
     )
 
     # Debug directories
-    debug_dir = _FREEPOSE_ROOT / "data" / "results" / "sam3d" / args.video / "04_coarse_poses"
+    debug_dir = _FREEPOSE_ROOT / "data" / "results" / "mvsam3d" / args.video / "04_coarse_poses"
     debug_gaussian_dir       = debug_dir / "gaussian"
     debug_bbox3d_dir         = debug_dir / "bbox3d"
+    debug_bbox3d_axis_dir    = debug_dir / "bbox3d_axis"
     debug_retrieved_tmpl_dir = debug_dir / "retrieved_templates"
     # debug_segmented_dir        = debug_dir / "object_segmented"
     debug_gaussian_dir.mkdir(parents=True, exist_ok=True)
     debug_bbox3d_dir.mkdir(parents=True, exist_ok=True)
+    debug_bbox3d_axis_dir.mkdir(parents=True, exist_ok=True)
     debug_retrieved_tmpl_dir.mkdir(parents=True, exist_ok=True)
     # debug_segmented_dir.mkdir(parents=True, exist_ok=True)
 
@@ -503,9 +600,41 @@ def main(args):
             except Exception as exc:
                 logger.warning(f"Debug bbox3d failed at frame {frame_idx}: {exc}")
 
+            try:
+                _save_bbox3d_axis(img, gaussian_splats[obj_idx], K, R_np, t_np, scales[obj_idx], box_np,
+                                  debug_bbox3d_axis_dir / f"{frame_idx:06d}_obj{obj_idx}.png")
+            except Exception as exc:
+                logger.warning(f"Debug bbox3d_axis failed at frame {frame_idx}: {exc}")
+
+            try:
+                _gs_world = gaussian_splats[obj_idx].get_xyz.detach().cpu().numpy()
+                _diam  = (_gs_world.max(0) - _gs_world.min(0)).max() * scales[obj_idx]
+                _bpx   = max(box_np[2] - box_np[0], box_np[3] - box_np[1]) + 1.0
+                _z     = K[0, 0] * _diam / _bpx
+                _cx    = (box_np[0] + box_np[2]) / 2.0
+                _cy    = (box_np[1] + box_np[3]) / 2.0
+                _center_cam = np.array([
+                    (_cx - K[0, 2]) * _z / K[0, 0],
+                    (_cy - K[1, 2]) * _z / K[1, 1],
+                    _z,
+                ])
+                _px  = int(np.clip(round(_cx), 0, img.shape[1] - 1))
+                _py  = int(np.clip(round(_cy), 0, img.shape[0] - 1))
+                _rgb = img[_py, _px]
+                logger.info(
+                    f"[bbox3d] frame={frame_idx:06d} obj={obj_idx} "
+                    f"center_cam=({_center_cam[0]:.4f}, {_center_cam[1]:.4f}, {_center_cam[2]:.4f}) "
+                    f"rgb=({int(_rgb[0])}, {int(_rgb[1])}, {int(_rgb[2])})"
+                )
+            except Exception as exc:
+                logger.warning(f"bbox3d center log failed at frame {frame_idx}: {exc}")
+
     df = pd.DataFrame(results_dict)
     df.to_csv(pose_outputs, index=False, header=True)
     logger.info(f"Saved poses → {pose_outputs}")
+
+    _dir_to_video(debug_bbox3d_dir,      debug_dir / "bbox3d.mp4")
+    _dir_to_video(debug_bbox3d_axis_dir, debug_dir / "bbox3d_axis.mp4")
 
     # ── Optional inline viz (--viz flag) ──────────────────────────────────────
     if args.viz:

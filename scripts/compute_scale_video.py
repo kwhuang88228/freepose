@@ -19,14 +19,17 @@ if __name__ == "__main__":
     args = argparse.ArgumentParser()
     args.add_argument("--video", type=str)
     args.add_argument("--proposals", type=str)
+    args.add_argument("--backend", type=str, default="sam3d",
+                      help="Pipeline backend: 'sam3d' or 'mvsam3d' (sets results subdirectory)")
     args = args.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     video_dir = Path("data") / "datasets" / "videos" / args.video
-    frame_paths = sorted([p for p in video_dir.iterdir() if p.suffix.lower() in [".jpg", ".jpeg"]])
+    # frame_paths = sorted([p for p in video_dir.iterdir() if p.suffix.lower() in [".jpg", ".jpeg", ".png"]])
+    frame_paths = sorted([p for p in video_dir.iterdir() if p.suffix.lower() in [".png"]])
 
-    results_dir = (Path("data") / "results" / "sam3d" / args.video).resolve()
+    results_dir = (Path("data") / "results" / args.backend / args.video).resolve()
     input_path = results_dir / args.proposals
     output_path = results_dir / args.proposals.replace(".json", "_gpt4_scaled.json")
 
