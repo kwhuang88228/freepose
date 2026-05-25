@@ -33,6 +33,8 @@ from transformers import AutoModelForZeroShotObjectDetection, AutoProcessor
 from src.pipeline.utils import Proposals, mask_to_bbox
 
 _FREEPOSE_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_FREEPOSE_ROOT / "inference"))
+from frames_to_video import frames_to_video
 
 random.seed(10)
 
@@ -213,6 +215,12 @@ if __name__ == "__main__":
     logger.info(f"SAM2 boxes        → {sam2_boxes_dir}")
     logger.info(f"SAM2 masks        → {sam2_masks_overlay_dir}")
     logger.info(f"SAM2 binary masks → {sam2_binary_masks_dir}")
+
+    # Convert selected frames to video
+    frames_to_video(sam2_boxes_dir, debug_tracking / "boxes.mp4", fps=16)
+    frames_to_video(sam2_masks_overlay_dir, debug_tracking / "masks_overlay.mp4", fps=16)
+    frames_to_video(sam2_binary_masks_dir, debug_tracking / "binary_masks.mp4", fps=16)
+    logger.info(f"Saved selected frames video → {debug_tracking}")
 
     # ── Stage 1c: Prepare MV-SAM3D input structure ────────────────────────────
     valid_frame_idxs = sorted(tracking_output.keys())

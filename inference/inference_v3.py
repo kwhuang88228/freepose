@@ -159,13 +159,14 @@ def main():
                 stage1_cmd += ["--prompt", prompt]
         else:
             stage1_cmd = [
-                "python", "-m", "scripts.extract_proposals_ground_video_mvsam3d",
+                "python", "-m", "scripts.extract_proposals_groundingdino-sam2_mvsam3d",
                 "--video", video,
                 "--num_views", str(args.num_views_mvsam3d),
             ]
             if args.track_object is not None:
                 prompt = args.track_object if args.track_object.endswith(".") else args.track_object + "."
                 stage1_cmd += ["--prompt", prompt]
+
         run(stage1_cmd)
 
     # Read the selected frame names produced by stage 1

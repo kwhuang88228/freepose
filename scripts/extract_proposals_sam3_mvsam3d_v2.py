@@ -9,7 +9,7 @@ Stage 1 (SAM3.1 variant) of the MV-SAM3D pipeline using the inference.py logic:
   4. Save proposals JSON.
 
 Debug outputs → data/results/mvsam3d/<video>/01_detection_tracking/
-  binary_mask/     frame{N:05d}_obj{id}.png
+  binary_mask/     frame{N:05d}.png
   boxes/           frame{N:05d}.png
   masks_overlay/   frame{N:05d}.png
 
@@ -119,9 +119,8 @@ if __name__ == "__main__":
         if src_img.exists() and not dst_img.exists():
             shutil.copy2(str(src_img), str(dst_img))
 
-        # Copy binary mask from debug output
-        obj_id   = next(iter(results[idx]["binary_masks"]))
-        src_mask = debug_dir / "binary_mask" / f"frame{idx:05d}_obj{obj_id}.png"
+        # Copy binary mask from debug output (union of all objects for this frame)
+        src_mask = debug_dir / "binary_mask" / f"frame{idx:05d}.png"
         dst_mask = masks_dest / f"{name}_mask.png"
         if src_mask.exists() and not dst_mask.exists():
             shutil.copy2(str(src_mask), str(dst_mask))
