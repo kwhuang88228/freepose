@@ -48,7 +48,8 @@ os.environ["PYOPENGL_PLATFORM"] = "egl"
 
 # ── Template dict builder ──────────────────────────────────────────────────────
 
-def build_template_dict(gs, model_name: str, n_poses: int = 600, bbox_extend: float = 0.05,
+def build_template_dict(gs, model_name: str, n_poses: int = 600, n_rolls: int = 12,
+                        bbox_extend: float = 0.05,
                         mask_template: bool = False, debug_dir=None):
     """Render 600 Hammersley views of *gs* and package them as a template_dict.
 
@@ -62,8 +63,8 @@ def build_template_dict(gs, model_name: str, n_poses: int = 600, bbox_extend: fl
           'depths'      list of Tensor [H, W] float (metric depth)
           'intrinsic'   Tensor [3, 3] float  (K_SAM3D pixel-space)
     """
-    logger.info(f"Rendering {n_poses} template views for {model_name}")
-    renderer = SplatRenderer(n_poses=n_poses)
+    logger.info(f"Rendering {n_poses}×{n_rolls} = {n_poses * n_rolls} template views for {model_name}")
+    renderer = SplatRenderer(n_poses=n_poses, n_rolls=n_rolls)
     renders  = renderer.render(gs)                                    # list of (rgb, depth, tcoinit)
     templates_cropped, tcoinits, masks_cropped = renderer.generate_proposals(renders, bbox_extend=bbox_extend, debug_dir=debug_dir)
 
@@ -91,7 +92,10 @@ def build_template_dict(gs, model_name: str, n_poses: int = 600, bbox_extend: fl
             cv2.imwrite(str(_pm_dir / f"{_i:04d}.png"), _img_up)
 
     # Append mask flag to cache key so masked/unmasked features don't collide.
+    # Only suffix _rolls when >1 so default runs stay cache-compatible with prior versions.
     cache_name = f"{model_name}_tmpl{'m' if mask_template else 'u'}"
+    if n_rolls > 1:
+        cache_name += f"_rolls{n_rolls}"
     # Store SAM-3D TCO_init matrices in the renderer for get_z_from_pointcloud
     return {
         "model_name":    cache_name,
@@ -103,6 +107,7 @@ def build_template_dict(gs, model_name: str, n_poses: int = 600, bbox_extend: fl
         "_renderer":     renderer,                                     # kept for fine-pose use
         "_masks_pixel":  np.stack(masks_cropped),                     # [N, H, W] bool
         "_xyzs":         renderer._xyz,                                # (N, 3) Hammersley unit-sphere coords
+        "_rolls":        np.array(renderer._rolls),                    # (N,) in-plane roll angles (rad)
     }
 
 
@@ -338,6 +343,7 @@ def main(args):
     results_dir    = (Path("data") / "results" / "mvsam3d" / args.video).resolve()
     proposals_path = results_dir / args.proposals
 
+    _rolls_suffix = f"_rolls{args.num_rolls}" if args.num_rolls > 1 else ""
     pose_outputs = results_dir / args.proposals.replace(
         ".json",
         f"_dinopose_layer_{args.layer}_bbext_{args.bbox_extend}_depth_{args.depth_method}"
@@ -345,6 +351,7 @@ def main(args):
         f"_timg{'m' if args.mask_template else 'u'}"
         f"_qpatch{'fg' if args.query_fg_patches else 'all'}"
         f"_tpatch{'fg' if args.template_fg_patches else 'all'}"
+        f"{_rolls_suffix}"
         f".csv",
     )
 
@@ -416,6 +423,7 @@ def main(args):
             gs,
             model_name=splat_path,
             n_poses=args.num_templates,
+            n_rolls=args.num_rolls,
             bbox_extend=args.bbox_extend,
             mask_template=args.mask_template,
             debug_dir=debug_dir / "render_sam3d_debug",
@@ -435,7 +443,7 @@ def main(args):
     SLURM_JOB_ID = os.environ.get("SLURM_JOB_ID", 0)
     cache_dir    = Path("data") / f"cache_{SLURM_JOB_ID}_{args.video}"
     model = DinoOnlinePoseEstimatorSam3d(
-        n_coarse_poses=args.num_templates,
+        n_coarse_poses=args.num_templates * args.num_rolls,
         n_fine_poses=20000,
         cache_size=args.cache_size,
         save_all=args.save_all_cache,
@@ -542,7 +550,8 @@ def main(args):
                     zip(out["retrieved_proposals"], out["retrieved_template_ids"], out["scores"])
                 ):
                     _tx, _ty, _tz = tdict["_xyzs"][tmpl_id]
-                    _rtag = f"{_tag}_rank{rank}_{tmpl_id:04d}_{sim:.4f}_{_tx:.3f}_{_ty:.3f}_{_tz:.3f}"
+                    _roll_deg = float(np.degrees(tdict["_rolls"][tmpl_id]))
+                    _rtag = f"{_tag}_rank{rank}_{tmpl_id:04d}_{sim:.4f}_{_tx:.3f}_{_ty:.3f}_{_tz:.3f}_roll{_roll_deg:+06.1f}"
                     _tmpl_np = (tmpl.permute(1, 2, 0).cpu().float().numpy() * 255).clip(0, 255).astype(np.uint8)
                     _tH, _tW = _tmpl_np.shape[:2]
 
@@ -684,6 +693,10 @@ if __name__ == "__main__":
     parser.add_argument("--cache_size",    type=int,   default=21)
     parser.add_argument("--num_templates", type=int,   default=600,
                         help="Number of Hammersley template views to render (default: 600)")
+    parser.add_argument("--num_rolls",     type=int,   default=12,
+                        help="Number of in-plane roll bins per viewpoint, sampling the S² × S¹ grid on SO(3) "
+                             "(default: 12 = 30° steps). Total templates = num_templates × num_rolls. "
+                             "Pass 1 to disable roll sampling.")
     parser.add_argument("--viz",           action="store_true")
     parser.add_argument("--save_all_cache", action="store_true")
     parser.add_argument("--mask_query",    action="store_true", default=True,

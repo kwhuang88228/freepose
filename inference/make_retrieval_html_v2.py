@@ -14,7 +14,7 @@ from tqdm import tqdm
 
 # ── paths ──────────────────────────────────────────────────────────────────────
 VIDEO_NAMES = ["P01-20240202-110250_3_knife", "P01-20240202-161948_19_spatula", "P01-20240202-171220_0_ladle", "P01-20240202-195538_6_spoon"]
-GROUP_NAME = "masked_unmasked_masked_unmasked"
+GROUP_NAME = "mvsam3d_3dtemplates"
 for VIDEO_NAME in tqdm(VIDEO_NAMES):
     BASE = f"/share/hariharan/kh775/code/freepose/data/results/mvsam3d/{GROUP_NAME}/{VIDEO_NAME}"
     TRACKING_DIR = os.path.join(BASE, "01_detection_tracking", "tracking", "boxes")
@@ -42,7 +42,7 @@ for VIDEO_NAME in tqdm(VIDEO_NAMES):
     # build a lookup: frame_id -> {rank: (filename, tmpl_id, sim, tx, ty, tz)}
     # filename format: {_tag}_rank{rank}_{tmpl_id:04d}_{sim:.4f}_{tx:.3f}_{ty:.3f}_{tz:.3f}.png
     template_lookup = {}
-    rank_re = re.compile(r"^(\d+)_obj\d+_rank(\d+)_(\d+)_([\d.]+)_([-\d.]+)_([-\d.]+)_([-\d.]+)\.png$")
+    rank_re = re.compile(r"^(\d+)_obj\d+_rank(\d+)_(\d+)_([\d.]+)_([-\d.]+)_([-\d.]+)_([-\d.]+)(?:_roll[+\-\d.]+)?\.png$")
     for fname in os.listdir(TEMPLATES_DIR):
         m = rank_re.match(fname)
         if m:

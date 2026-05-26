@@ -97,40 +97,63 @@ class SplatRenderer:
     Args:
         n_poses:    Number of Hammersley viewpoints to pre-compute.
         resolution: Rendered image resolution (square).
+        n_rolls:    Number of in-plane roll bins per viewpoint (S² × S¹ grid on SO(3)).
+                    Total templates = n_poses × n_rolls. Pass 1 to disable roll sampling.
     """
 
-    def __init__(self, n_poses: int = 600, resolution: int = SAM3D_RESOLUTION):
+    def __init__(self, n_poses: int = 600, resolution: int = SAM3D_RESOLUTION,
+                 n_rolls: int = 1):
         self.n_poses    = n_poses
+        self.n_rolls    = n_rolls
+        self.n_views    = n_poses * n_rolls
         self.resolution = resolution
 
-        # Pre-compute Hammersley camera parameters (yaw, pitch)
+        # Base Hammersley (yaw, pitch) — one per viewpoint.
         cams = [sphere_hammersley_sequence(i, n_poses) for i in range(n_poses)]
-        self._yaws   = [c[0] for c in cams]
-        self._pitchs = [c[1] for c in cams]
+        yaws_base   = [c[0] for c in cams]
+        pitchs_base = [c[1] for c in cams]
 
-        # Pre-compute extrinsics (world-to-camera) and store as numpy 4×4 arrays
-        extrinsics, intrinsics = yaw_pitch_r_fov_to_extrinsics_intrinsics(
-            self._yaws, self._pitchs, rs=SAM3D_R, fovs=SAM3D_FOV_DEG
+        base_extrinsics, base_intrinsics = yaw_pitch_r_fov_to_extrinsics_intrinsics(
+            yaws_base, pitchs_base, rs=SAM3D_R, fovs=SAM3D_FOV_DEG
         )
-        self._extrinsics = extrinsics   # list of (4,4) tensors
-        self._intrinsics = intrinsics   # list of (3,3) tensors (normalised)
+
+        # Expand each viewpoint into n_rolls in-plane rotations about the optical axis.
+        # E_new = Rz(ψ) @ E_old rotates the camera frame about its own +Z; since the
+        # principal point is at image center and fx=fy, this is equivalent to rotating
+        # the rendered image about its center by ψ.
+        roll_angles = [2.0 * math.pi * j / n_rolls for j in range(n_rolls)]
+        self._yaws, self._pitchs, self._rolls = [], [], []
+        self._extrinsics, self._intrinsics = [], []
+        for i in range(n_poses):
+            E_i = base_extrinsics[i]
+            K_i = base_intrinsics[i]
+            for psi in roll_angles:
+                c, s = math.cos(psi), math.sin(psi)
+                R_roll = torch.eye(4, dtype=E_i.dtype, device=E_i.device)
+                R_roll[0, 0] = c;  R_roll[0, 1] = -s
+                R_roll[1, 0] = s;  R_roll[1, 1] =  c
+                self._extrinsics.append(R_roll @ E_i)
+                self._intrinsics.append(K_i)   # K unchanged by roll about optical axis
+                self._yaws.append(yaws_base[i])
+                self._pitchs.append(pitchs_base[i])
+                self._rolls.append(psi)
 
         # Rotation matrices (for geodesic distance computation)
         self.rotations = np.stack([
             e.cpu().numpy()[:3, :3] for e in self._extrinsics
-        ])  # (N, 3, 3)
+        ])  # (n_views, 3, 3)
 
         # 4×4 TCO_init matrices used by get_z_from_pointcloud
         self.tcoinits = np.stack([
             extrinsic_to_tcoinit(e) for e in self._extrinsics
-        ])  # (N, 4, 4)
+        ])  # (n_views, 4, 4)
 
-        # Unit-sphere Hammersley coords derived from (yaw, pitch):
-        #   x = cos(pitch)*cos(yaw),  y = cos(pitch)*sin(yaw),  z = sin(pitch)
+        # Unit-sphere Hammersley coords derived from (yaw, pitch); repeated across
+        # rolls of the same viewpoint (viewpoint direction is roll-invariant).
         self._xyz = np.array([
             [math.cos(p) * math.cos(y), math.cos(p) * math.sin(y), math.sin(p)]
             for y, p in zip(self._yaws, self._pitchs)
-        ])  # (N, 3)
+        ])  # (n_views, 3)
 
     # ------------------------------------------------------------------
     def _render_at_indices(self, gs: Gaussian, indices: list[int]) -> list[tuple]:
@@ -178,7 +201,7 @@ class SplatRenderer:
         Returns:
             List of (rgb, depth_metric, tcoinit_4x4) for each pose.
         """
-        return self._render_at_indices(gs, list(range(self.n_poses)))
+        return self._render_at_indices(gs, list(range(self.n_views)))
 
     def render_from_poses(self, gs: Gaussian, pose_indices: list[int]) -> list[tuple]:
         """Render *gs* at the specified pose indices.
