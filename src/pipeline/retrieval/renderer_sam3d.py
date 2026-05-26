@@ -2,7 +2,8 @@
 renderer_sam3d.py — Gaussian-splat-based template renderer (replaces MeshRenderer).
 
 Uses SAM-3D-Objects' GaussianRenderer to pre-render a Gaussian splat at N
-Hammersley-sampled viewpoints, producing (RGB, depth, extrinsic) tuples in the
+Hopf-Hammersley-sampled SO(3) poses (yaw, pitch, roll drawn jointly from one
+low-discrepancy sequence), producing (RGB, depth, extrinsic) tuples in the
 same format expected by downstream pose estimators.
 """
 
@@ -28,7 +29,7 @@ from sam3d_objects.model.backbone.tdfy_dit.utils.render_utils import (
     render_frames,
     yaw_pitch_r_fov_to_extrinsics_intrinsics,
 )
-from sam3d_objects.model.backbone.tdfy_dit.utils.random_utils import sphere_hammersley_sequence
+from sam3d_objects.model.backbone.tdfy_dit.utils.random_utils import radical_inverse
 
 # ── SAM-3D rendering constants (must match the training camera convention) ────
 SAM3D_RESOLUTION = 512
@@ -86,57 +87,71 @@ def extrinsic_to_tcoinit(extrinsic: torch.Tensor) -> np.ndarray:
     return TCO
 
 
+# ── Hopf-Hammersley SO(3) sampler ─────────────────────────────────────────────
+
+def hopf_hammersley_sequence(n: int, num_samples: int) -> tuple[float, float, float]:
+    """Joint Hopf-Hammersley sample on SO(3): returns (yaw, pitch, roll).
+
+    Coords come from one low-discrepancy sequence (n/N, Φ_2(n), Φ_3(n)) routed
+    through the Hopf parametrization, so the (yaw, pitch, roll) triples do NOT
+    factor as a product of an S² sequence and an S¹ sequence. On the first two
+    coords this matches sphere_hammersley_sequence's (yaw, pitch); the third
+    coord is the Hopf fiber angle (in-plane camera rotation).
+    """
+    u = n / num_samples
+    v = radical_inverse(2, n)
+    w = radical_inverse(3, n)
+    pitch = math.acos(1.0 - 2.0 * u) - math.pi / 2.0   # elevation, [-π/2, π/2]
+    yaw   = v * 2.0 * math.pi                          # azimuth, [0, 2π)
+    roll  = w * 2.0 * math.pi                          # fiber, [0, 2π)
+    return yaw, pitch, roll
+
+
 # ── SplatRenderer ─────────────────────────────────────────────────────────────
 
 class SplatRenderer:
-    """Renders a SAM-3D Gaussian splat at Hammersley-sampled viewpoints.
+    """Renders a SAM-3D Gaussian splat at Hopf-Hammersley-sampled SO(3) poses.
 
     Mirrors the interface of MeshRenderer so downstream estimators can swap it in
     with minimal changes.
 
     Args:
-        n_poses:    Number of Hammersley viewpoints to pre-compute.
+        n_views:    Number of Hopf-Hammersley SO(3) samples to pre-compute.
         resolution: Rendered image resolution (square).
-        n_rolls:    Number of in-plane roll bins per viewpoint (S² × S¹ grid on SO(3)).
-                    Total templates = n_poses × n_rolls. Pass 1 to disable roll sampling.
     """
 
-    def __init__(self, n_poses: int = 600, resolution: int = SAM3D_RESOLUTION,
-                 n_rolls: int = 1):
-        self.n_poses    = n_poses
-        self.n_rolls    = n_rolls
-        self.n_views    = n_poses * n_rolls
+    def __init__(self, n_views: int = 600, resolution: int = SAM3D_RESOLUTION):
+        self.n_views    = n_views
         self.resolution = resolution
 
-        # Base Hammersley (yaw, pitch) — one per viewpoint.
-        cams = [sphere_hammersley_sequence(i, n_poses) for i in range(n_poses)]
-        yaws_base   = [c[0] for c in cams]
-        pitchs_base = [c[1] for c in cams]
+        # Joint Hopf-Hammersley (yaw, pitch, roll) — one triple per view, not a
+        # product of an S² sequence and an S¹ sequence.
+        self._yaws, self._pitchs, self._rolls = [], [], []
+        for i in range(self.n_views):
+            yaw, pitch, roll = hopf_hammersley_sequence(i, self.n_views)
+            self._yaws.append(yaw)
+            self._pitchs.append(pitch)
+            self._rolls.append(roll)
 
         base_extrinsics, base_intrinsics = yaw_pitch_r_fov_to_extrinsics_intrinsics(
-            yaws_base, pitchs_base, rs=SAM3D_R, fovs=SAM3D_FOV_DEG
+            self._yaws, self._pitchs, rs=SAM3D_R, fovs=SAM3D_FOV_DEG
         )
 
-        # Expand each viewpoint into n_rolls in-plane rotations about the optical axis.
-        # E_new = Rz(ψ) @ E_old rotates the camera frame about its own +Z; since the
-        # principal point is at image center and fx=fy, this is equivalent to rotating
-        # the rendered image about its center by ψ.
-        roll_angles = [2.0 * math.pi * j / n_rolls for j in range(n_rolls)]
-        self._yaws, self._pitchs, self._rolls = [], [], []
+        # Apply the Hopf fiber angle as an in-plane rotation about the camera
+        # optical axis. E_new = Rz(ψ) @ E_base rotates the camera frame about its
+        # own +Z; since principal point is centered and fx=fy, this is equivalent
+        # to rotating the rendered image about its center by ψ.
         self._extrinsics, self._intrinsics = [], []
-        for i in range(n_poses):
-            E_i = base_extrinsics[i]
-            K_i = base_intrinsics[i]
-            for psi in roll_angles:
-                c, s = math.cos(psi), math.sin(psi)
-                R_roll = torch.eye(4, dtype=E_i.dtype, device=E_i.device)
-                R_roll[0, 0] = c;  R_roll[0, 1] = -s
-                R_roll[1, 0] = s;  R_roll[1, 1] =  c
-                self._extrinsics.append(R_roll @ E_i)
-                self._intrinsics.append(K_i)   # K unchanged by roll about optical axis
-                self._yaws.append(yaws_base[i])
-                self._pitchs.append(pitchs_base[i])
-                self._rolls.append(psi)
+        for i in range(self.n_views):
+            E_i  = base_extrinsics[i]
+            K_i  = base_intrinsics[i]
+            psi  = self._rolls[i]
+            c, s = math.cos(psi), math.sin(psi)
+            R_roll = torch.eye(4, dtype=E_i.dtype, device=E_i.device)
+            R_roll[0, 0] = c;  R_roll[0, 1] = -s
+            R_roll[1, 0] = s;  R_roll[1, 1] =  c
+            self._extrinsics.append(R_roll @ E_i)
+            self._intrinsics.append(K_i)   # K unchanged by roll about optical axis
 
         # Rotation matrices (for geodesic distance computation)
         self.rotations = np.stack([
@@ -148,8 +163,7 @@ class SplatRenderer:
             extrinsic_to_tcoinit(e) for e in self._extrinsics
         ])  # (n_views, 4, 4)
 
-        # Unit-sphere Hammersley coords derived from (yaw, pitch); repeated across
-        # rolls of the same viewpoint (viewpoint direction is roll-invariant).
+        # Unit-sphere viewing direction per sample (Hopf base point on S²).
         self._xyz = np.array([
             [math.cos(p) * math.cos(y), math.cos(p) * math.sin(y), math.sin(p)]
             for y, p in zip(self._yaws, self._pitchs)
@@ -196,7 +210,7 @@ class SplatRenderer:
 
     # ------------------------------------------------------------------
     def render(self, gs: Gaussian) -> list[tuple]:
-        """Render all n_poses views of *gs*.
+        """Render all n_views of *gs*.
 
         Returns:
             List of (rgb, depth_metric, tcoinit_4x4) for each pose.

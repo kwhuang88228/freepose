@@ -111,7 +111,7 @@ class DinoOnlinePoseEstimatorSam3d(nn.Module):
     """Fine-pose estimator using SAM-3D Gaussian splat rendering.
 
     Mirrors DinoOnlinePoseEstimator but:
-      - Uses SplatRenderer (20 000 fine Hammersley poses, SAM-3D camera).
+      - Uses SplatRenderer (20 000 fine Hopf-Hammersley SO(3) poses, SAM-3D camera).
       - No mesh.apply_scale(); passes Gaussian splat directly.
       - Depth handling adjusted for SAM-3D percent-depth → metric.
     """
@@ -124,8 +124,8 @@ class DinoOnlinePoseEstimatorSam3d(nn.Module):
             save_all=save_all, cache_dir=cache_dir,
         )
         self.feature_extractor = DINOv2FeatureExtractor().to('cuda', dtype=torch.bfloat16)
-        # Fine renderer: 20 000 Hammersley poses; extrinsics pre-computed but renders on demand.
-        self.fine_renderer = SplatRenderer(n_poses=n_fine_poses)
+        # Fine renderer: 20 000 Hopf-Hammersley SO(3) poses; extrinsics pre-computed but renders on demand.
+        self.fine_renderer = SplatRenderer(n_views=n_fine_poses)
         # Copy SAM-3D TCO_inits into coarse estimator so coarse forward uses them.
         self.coarse_estimator.mesh_poses = list(self.fine_renderer.tcoinits[:n_coarse_poses])
 

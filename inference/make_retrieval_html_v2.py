@@ -14,7 +14,7 @@ from tqdm import tqdm
 
 # ── paths ──────────────────────────────────────────────────────────────────────
 VIDEO_NAMES = ["P01-20240202-110250_3_knife", "P01-20240202-161948_19_spatula", "P01-20240202-171220_0_ladle", "P01-20240202-195538_6_spoon"]
-GROUP_NAME = "mvsam3d_3dtemplates"
+GROUP_NAME = "3d_templates"
 for VIDEO_NAME in tqdm(VIDEO_NAMES):
     BASE = f"/share/hariharan/kh775/code/freepose/data/results/mvsam3d/{GROUP_NAME}/{VIDEO_NAME}"
     TRACKING_DIR = os.path.join(BASE, "01_detection_tracking", "tracking", "boxes")

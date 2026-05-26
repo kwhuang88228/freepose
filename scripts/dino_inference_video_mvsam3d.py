@@ -3,7 +3,7 @@ dino_inference_video_mvsam3d.py
 
 Stage 4 of the MV-SAM3D pipeline:
   1. Load each object's Gaussian splat (path stored in proposals JSON 'mesh' field).
-  2. Pre-render 600 Hammersley views of the splat → coarse template bank.
+  2. Pre-render Hopf-Hammersley SO(3) views of the splat → coarse template bank.
   3. Run DinoOnlinePoseEstimatorSam3d per frame: coarse DINOv2 matching +
      fine-pose neighbourhood refinement.
   4. Write per-frame 6D poses to CSV.
@@ -48,10 +48,10 @@ os.environ["PYOPENGL_PLATFORM"] = "egl"
 
 # ── Template dict builder ──────────────────────────────────────────────────────
 
-def build_template_dict(gs, model_name: str, n_poses: int = 600, n_rolls: int = 12,
+def build_template_dict(gs, model_name: str, n_views: int = 7200,
                         bbox_extend: float = 0.05,
                         mask_template: bool = False, debug_dir=None):
-    """Render 600 Hammersley views of *gs* and package them as a template_dict.
+    """Render Hopf-Hammersley SO(3) views of *gs* and package them as a template_dict.
 
     The format mirrors what WebTemplateDataset returns so DinoPoseEstimatorSam3d
     can use the same feature-extraction + caching machinery.
@@ -63,8 +63,8 @@ def build_template_dict(gs, model_name: str, n_poses: int = 600, n_rolls: int = 
           'depths'      list of Tensor [H, W] float (metric depth)
           'intrinsic'   Tensor [3, 3] float  (K_SAM3D pixel-space)
     """
-    logger.info(f"Rendering {n_poses}×{n_rolls} = {n_poses * n_rolls} template views for {model_name}")
-    renderer = SplatRenderer(n_poses=n_poses, n_rolls=n_rolls)
+    logger.info(f"Rendering {n_views} Hopf-Hammersley SO(3) template views for {model_name}")
+    renderer = SplatRenderer(n_views=n_views)
     renders  = renderer.render(gs)                                    # list of (rgb, depth, tcoinit)
     templates_cropped, tcoinits, masks_cropped = renderer.generate_proposals(renders, bbox_extend=bbox_extend, debug_dir=debug_dir)
 
@@ -91,11 +91,11 @@ def build_template_dict(gs, model_name: str, n_poses: int = 600, n_rolls: int = 
             _img_up = cv2.resize(_grid, (_W, _H), interpolation=cv2.INTER_NEAREST)
             cv2.imwrite(str(_pm_dir / f"{_i:04d}.png"), _img_up)
 
-    # Append mask flag to cache key so masked/unmasked features don't collide.
-    # Only suffix _rolls when >1 so default runs stay cache-compatible with prior versions.
-    cache_name = f"{model_name}_tmpl{'m' if mask_template else 'u'}"
-    if n_rolls > 1:
-        cache_name += f"_rolls{n_rolls}"
+    # Mask flag + sampler tag + view count in the cache key:
+    #   - mask flag avoids masked/unmasked feature collision
+    #   - _hopf invalidates caches built with the older S²×S¹ product sampler
+    #   - _n{N} prevents collision between runs at different total view counts
+    cache_name = f"{model_name}_tmpl{'m' if mask_template else 'u'}_hopf_n{n_views}"
     # Store SAM-3D TCO_init matrices in the renderer for get_z_from_pointcloud
     return {
         "model_name":    cache_name,
@@ -106,7 +106,7 @@ def build_template_dict(gs, model_name: str, n_poses: int = 600, n_rolls: int = 
         "_tcoinits":     tcoinits,                                     # list of (4,4) np arrays
         "_renderer":     renderer,                                     # kept for fine-pose use
         "_masks_pixel":  np.stack(masks_cropped),                     # [N, H, W] bool
-        "_xyzs":         renderer._xyz,                                # (N, 3) Hammersley unit-sphere coords
+        "_xyzs":         renderer._xyz,                                # (N, 3) Hopf base-point unit vectors on S²
         "_rolls":        np.array(renderer._rolls),                    # (N,) in-plane roll angles (rad)
     }
 
@@ -343,7 +343,6 @@ def main(args):
     results_dir    = (Path("data") / "results" / "mvsam3d" / args.video).resolve()
     proposals_path = results_dir / args.proposals
 
-    _rolls_suffix = f"_rolls{args.num_rolls}" if args.num_rolls > 1 else ""
     pose_outputs = results_dir / args.proposals.replace(
         ".json",
         f"_dinopose_layer_{args.layer}_bbext_{args.bbox_extend}_depth_{args.depth_method}"
@@ -351,7 +350,7 @@ def main(args):
         f"_timg{'m' if args.mask_template else 'u'}"
         f"_qpatch{'fg' if args.query_fg_patches else 'all'}"
         f"_tpatch{'fg' if args.template_fg_patches else 'all'}"
-        f"{_rolls_suffix}"
+        f"_n{args.num_templates}"
         f".csv",
     )
 
@@ -422,8 +421,7 @@ def main(args):
         tdict = build_template_dict(
             gs,
             model_name=splat_path,
-            n_poses=args.num_templates,
-            n_rolls=args.num_rolls,
+            n_views=args.num_templates,
             bbox_extend=args.bbox_extend,
             mask_template=args.mask_template,
             debug_dir=debug_dir / "render_sam3d_debug",
@@ -443,7 +441,7 @@ def main(args):
     SLURM_JOB_ID = os.environ.get("SLURM_JOB_ID", 0)
     cache_dir    = Path("data") / f"cache_{SLURM_JOB_ID}_{args.video}"
     model = DinoOnlinePoseEstimatorSam3d(
-        n_coarse_poses=args.num_templates * args.num_rolls,
+        n_coarse_poses=args.num_templates,
         n_fine_poses=20000,
         cache_size=args.cache_size,
         save_all=args.save_all_cache,
@@ -451,7 +449,7 @@ def main(args):
     ).to(device, dtype=torch.bfloat16)
 
     # Patch coarse estimator's mesh_poses with the correct SAM-3D TCO_inits
-    # (one set per object; use object 0's renderer since all share the same Hammersley sequence)
+    # (one set per object; use object 0's renderer since all share the same Hopf-Hammersley sequence)
     model.coarse_estimator.mesh_poses = template_dicts[0]["_tcoinits"]
 
     # ── Per-frame inference ────────────────────────────────────────────────────
@@ -691,12 +689,8 @@ if __name__ == "__main__":
     parser.add_argument("--bbox_extend", type=float, default=0.05)
     parser.add_argument("--batch_size",    type=int,   default=128)
     parser.add_argument("--cache_size",    type=int,   default=21)
-    parser.add_argument("--num_templates", type=int,   default=600,
-                        help="Number of Hammersley template views to render (default: 600)")
-    parser.add_argument("--num_rolls",     type=int,   default=12,
-                        help="Number of in-plane roll bins per viewpoint, sampling the S² × S¹ grid on SO(3) "
-                             "(default: 12 = 30° steps). Total templates = num_templates × num_rolls. "
-                             "Pass 1 to disable roll sampling.")
+    parser.add_argument("--num_templates", type=int,   default=7200,
+                        help="Number of Hopf-Hammersley SO(3) template views to render (default: 7200)")
     parser.add_argument("--viz",           action="store_true")
     parser.add_argument("--save_all_cache", action="store_true")
     parser.add_argument("--mask_query",    action="store_true", default=True,

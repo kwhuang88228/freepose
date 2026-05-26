@@ -90,11 +90,9 @@ def main():
     parser.add_argument("--no-skip_completed", dest="skip_completed", action="store_false")
 
     # ── Pose estimation options ───────────────────────────────────────────────
-    parser.add_argument("--num_templates", type=int, default=600,
-                        help="Template views rendered for pose matching (default: 600)")
-    parser.add_argument("--num_rolls", type=int, default=12,
-                        help="In-plane roll bins per viewpoint for pose matching, sampling the S² × S¹ grid on SO(3) "
-                             "(default: 12 = 30° steps). Pass 1 to disable roll sampling.")
+    parser.add_argument("--num_templates", type=int, default=3600,
+                        help="Hopf-Hammersley SO(3) template views rendered for pose matching (default: 3600). "
+                             "Yaw, pitch, and roll are sampled jointly from one low-discrepancy SO(3) sequence.")
     parser.add_argument("--mask_query", action="store_true", default=True,
                         help="Mask query crop to object foreground (default: True).")
     parser.add_argument("--no-mask_query", dest="mask_query", action="store_false")
@@ -252,7 +250,6 @@ def main():
              "--backend", "mvsam3d"])
 
     # Stage 7: Per-frame 6D pose estimation (DINOv2)
-    rolls_suffix = f"_rolls{args.num_rolls}" if args.num_rolls > 1 else ""
     poses_csv = (
         scaled_props.replace(".json", "")
         + f"_dinopose_layer_{args.dino_layer}_bbext_0.05_depth_zoedepth"
@@ -260,7 +257,7 @@ def main():
         f"_timg{'m' if args.mask_template else 'u'}"
         f"_qpatch{'fg' if args.query_fg_patches else 'all'}"
         f"_tpatch{'fg' if args.template_fg_patches else 'all'}"
-        f"{rolls_suffix}"
+        f"_n{args.num_templates}"
         f".csv"
     )
     poses_path = results_dir / poses_csv
@@ -273,7 +270,6 @@ def main():
             "--proposals", scaled_props,
             "--num_templates", str(args.num_templates),
             "--layer", str(args.dino_layer),
-            "--num_rolls", str(args.num_rolls)
         ]
         if not args.mask_query:
             stage7_cmd += ["--no-mask_query"]
