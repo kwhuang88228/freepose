@@ -5,7 +5,7 @@ kalman_smooth_poses.py
 Apply a Kalman filter to smooth 6D pose trajectories stored in a BOP-format CSV.
 
 For each tracked object:
-  - Translation (x, y, z): independent constant-velocity Kalman filter per coordinate.
+  - Translation (x, y, z): left untouched (bounding box position/size already accurate).
   - Rotation: constant-velocity Kalman filter on the axis-angle (Rodrigues vector)
     representation; result is re-normalised back to SO(3) via Rotation.from_rotvec.
 
@@ -73,16 +73,11 @@ def _kalman_smooth(seq: np.ndarray, process_noise: float, meas_noise: float) -> 
 
 def kalman_smooth_transforms(
     TCOs: np.ndarray,
-    trans_process_noise: float = 1e-4,
-    trans_meas_noise: float = 1e-2,
     rot_process_noise: float = 1e-4,
     rot_meas_noise: float = 1e-1,
 ) -> np.ndarray:
-    """Kalman-smooth an (N, 4, 4) pose trajectory in-place copy."""
+    """Kalman-smooth rotation only on an (N, 4, 4) pose trajectory; translation unchanged."""
     TCOs = TCOs.copy()
-    TCOs[:, :3, 3] = _kalman_smooth(
-        TCOs[:, :3, 3], trans_process_noise, trans_meas_noise
-    )
     rotvecs = Rotation.from_matrix(TCOs[:, :3, :3]).as_rotvec()
     TCOs[:, :3, :3] = Rotation.from_rotvec(
         _kalman_smooth(rotvecs, rot_process_noise, rot_meas_noise)
@@ -268,7 +263,7 @@ def _run_viz(df_all, video_dir, viz_dir):
     print(f"Kalman viz → {viz_dir}")
 
 
-def _dir_to_video(frames_dir: Path, out_path: Path, fps: int = 10) -> None:
+def _dir_to_video(frames_dir: Path, out_path: Path, fps: int = 30) -> None:
     import cv2
     frames = sorted(frames_dir.glob("*.png"))
     if not frames:
@@ -305,7 +300,7 @@ def main(args):
             transforms.append(T)
         transforms = np.stack(transforms)
 
-        transforms = kalman_smooth_transforms(transforms)
+        transforms = kalman_smooth_transforms(transforms, 1e-1, 1e-1)
 
         df_out = df.copy()
         df_out["R"] = [" ".join(map(str, r)) for r in transforms[:, :3, :3].reshape(-1, 9)]

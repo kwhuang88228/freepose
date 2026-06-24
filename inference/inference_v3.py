@@ -15,6 +15,7 @@ Pipeline:
     5. Backfill mesh path in proposals JSON
     6. Scale estimation (ZoeDepth + CLIP)
     7. Per-frame 6D pose estimation (DINOv2 patch-feature matching)
+    7.5 Symmetry canonicalization: greedy temporal selection from top-N candidates
     8. Kalman filter smoothing of pose trajectory
 
 Usage:
@@ -36,6 +37,7 @@ Debug outputs (per stage):
 
 import argparse
 import json
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -69,6 +71,12 @@ def run(cmd: list[str], cwd: Path = None) -> None:
     result = subprocess.run(cmd, cwd=cwd or FREEPOSE_ROOT)
     if result.returncode != 0:
         sys.exit(f"Pipeline failed at: {' '.join(cmd)}")
+
+
+def log_command(results_dir: Path) -> None:
+    """Write the invoking shell command to results_dir/command.txt."""
+    cmd_line = shlex.join([sys.executable, *sys.argv])
+    (results_dir / "command.txt").write_text(cmd_line + "\n")
 
 
 def main():
@@ -107,6 +115,9 @@ def main():
     parser.add_argument("--no-template_fg_patches", dest="template_fg_patches", action="store_false")
     parser.add_argument("--dino_layer", type=int, default=22,
                         help="DINOv2 layer for patch-feature extraction (default: 22)")
+    parser.add_argument("--top_n_candidates", type=int, default=5,
+                        help="Number of top pose candidates to consider during "
+                             "symmetry canonicalization (default: 5).")
 
     # ── MV-SAM3D options ──────────────────────────────────────────────────────
     parser.add_argument("--num_views_mvsam3d", type=int, default=6,
@@ -138,6 +149,7 @@ def main():
 
     results_dir     = FREEPOSE_ROOT / "data" / "results" / "mvsam3d" / video
     results_dir.mkdir(parents=True, exist_ok=True)
+    log_command(results_dir)
 
     props_file      = results_dir / f"mvsam3d_{video}_{prompt_slug}.json"
     names_file      = results_dir / f"mvsam3d_{video}_{prompt_slug}_selected_frames.txt"
@@ -279,23 +291,37 @@ def main():
             stage7_cmd += ["--no-query_fg_patches"]
         if args.template_fg_patches:
             stage7_cmd += ["--template_fg_patches"]
+        stage7_cmd += ["--top_n_candidates", str(args.top_n_candidates)]
         run(stage7_cmd)
 
-    # Stage 8: Kalman filter smoothing
-    kalman_csv  = poses_csv.replace(".csv", "_kalman.csv")
+    # Stage 7.5: Symmetry canonicalization (greedy temporal selection from top-5)
+    canonical_csv  = poses_csv.replace(".csv", "_canonical.csv")
+    canonical_path = results_dir / canonical_csv
+    if skip and canonical_path.exists():
+        print(f"Stage 7.5: canonical output already exists ({canonical_csv}), skipping.")
+    else:
+        run(["python", "-m", "scripts.canonicalize_symmetry",
+             "--video", video,
+             "--poses", poses_csv,
+             "--backend", "mvsam3d",
+             "--top_n", str(args.top_n_candidates)])
+
+    # Stage 8: Kalman filter smoothing (consumes canonicalized poses)
+    kalman_csv  = canonical_csv.replace(".csv", "_kalman.csv")
     kalman_path = results_dir / kalman_csv
     if skip and kalman_path.exists():
         print(f"Stage 8: Kalman output already exists ({kalman_csv}), skipping.")
     else:
         run(["python", "-m", "scripts.kalman_smooth_poses",
              "--video", video,
-             "--poses", poses_csv,
+             "--poses", canonical_csv,
              "--backend", "mvsam3d",
              "--viz"])
 
     print(f"\nDone. 3D assets written to:\n  {mvsam3d_out_dir}")
     print(f"  DA3 depth/pointmaps: {da3_npz}")
     print(f"  6D pose trajectory:  {poses_path}")
+    print(f"  Canonicalized:       {canonical_path}")
     print(f"  Kalman-smoothed:     {kalman_path}")
 
 

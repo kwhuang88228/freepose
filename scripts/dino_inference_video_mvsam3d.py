@@ -320,7 +320,7 @@ def _feature_mask_img(patch_mask_1d, H: int, W: int, patch_size: int = 14) -> np
     return cv2.resize(grid.astype(np.uint8) * 255, (W, H), interpolation=cv2.INTER_NEAREST)
 
 
-def _dir_to_video(frames_dir: Path, out_path: Path, fps: int = 10) -> None:
+def _dir_to_video(frames_dir: Path, out_path: Path, fps: int = 30) -> None:
     frames = sorted(frames_dir.glob("*.png"))
     if not frames:
         logger.warning(f"No frames in {frames_dir}, skipping video.")
@@ -456,6 +456,10 @@ def main(args):
     results_dict = {
         "scene_id": [], "im_id": [], "obj_id": [], "score": [],
         "R": [], "t": [], "bbox_visib": [], "scale": [], "time": [],
+        # Top-5 candidates for downstream symmetry canonicalization. Each row stores
+        # 5 pipe-separated rotations / translations (9 / 3 space-separated floats per
+        # candidate) and 5 space-separated DINO scores, ranked by score descending.
+        "R_top5": [], "t_top5": [], "score_top5": [],
     }
 
     prev_poses = [None] * n_objects
@@ -496,6 +500,7 @@ def main(args):
                     proposal_mask=prop_mask,
                     use_query_fg_patches=args.query_fg_patches,
                     use_template_fg_patches=args.template_fg_patches,
+                    top_k=args.top_n_candidates,
                 )
                 prev_poses[obj_idx] = out["TCO"][0]
 
@@ -577,6 +582,14 @@ def main(args):
             bbox = out["bbox"].cpu().numpy()
             bbox = [bbox[0], bbox[1], bbox[2] - bbox[0], bbox[3] - bbox[1]]
 
+            R_top5_str = "|".join(
+                " ".join(str(x) for x in tco[:3, :3].flatten()) for tco in out["TCO"]
+            )
+            t_top5_str = "|".join(
+                " ".join(str(x) for x in tco[:3, 3]) for tco in out["TCO"]
+            )
+            score_top5_str = " ".join(str(s) for s in out["scores"])
+
             results_dict["scene_id"].append(0)
             results_dict["im_id"].append(int(frame_idx))
             results_dict["obj_id"].append(splat_paths[obj_idx])
@@ -586,6 +599,9 @@ def main(args):
             results_dict["bbox_visib"].append(" ".join(str(x) for x in bbox))
             results_dict["scale"].append(scale)
             results_dict["time"].append(-1)
+            results_dict["R_top5"].append(R_top5_str)
+            results_dict["t_top5"].append(t_top5_str)
+            results_dict["score_top5"].append(score_top5_str)
 
         # ── Debug: save centroid projection for all frames ──────────────────────
         for obj_idx in range(n_objects):
@@ -708,5 +724,7 @@ if __name__ == "__main__":
                         help="Average similarity only over each template's foreground patches (default: False). "
                              "Pass --template_fg_patches to enable.")
     parser.add_argument("--no-template_fg_patches", dest="template_fg_patches", action="store_false")
+    parser.add_argument("--top_n_candidates", type=int, default=5,
+                        help="Number of top pose candidates to retrieve per frame (default: 5).")
     args = parser.parse_args()
     main(args)

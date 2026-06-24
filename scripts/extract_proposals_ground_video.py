@@ -225,7 +225,7 @@ if __name__ == "__main__":
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     video_dir = Path("data/datasets/videos") / args.video
-    frame_paths = sorted([p for p in video_dir.iterdir() if p.suffix.lower() in [".jpg", ".jpeg"]])
+    frame_paths = sorted([p for p in video_dir.iterdir() if p.suffix.lower() in [".jpg", ".jpeg", ".png"]])
 
     feature_type = "ffa" if "ffa" in args.retrieval else "cls"
     layer = int(args.retrieval.split("_")[-1])

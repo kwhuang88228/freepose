@@ -69,6 +69,19 @@ def filter_by_score(proposals_path: Path) -> None:
         json.dump(object_proposals[idx], f)
 
 
+def frames_to_video(frames_dir: Path, out_path: Path, fps: int = 30) -> None:
+    """Encode a directory of zero-padded PNG frames into an fps mp4 via ffmpeg."""
+    run([
+        "ffmpeg", "-y",
+        "-framerate", str(fps),
+        "-i", str(frames_dir / "%06d.png"),
+        "-c:v", "libx264",
+        "-pix_fmt", "yuv420p",
+        str(out_path),
+    ])
+    print(f"Wrote {out_path}")
+
+
 def run(cmd: list[str]) -> None:
     print(f"\n[>>] {' '.join(cmd)}")
     result = subprocess.run(cmd, cwd=FREEPOSE_ROOT)
@@ -112,7 +125,7 @@ def main():
     run(stage1_cmd)
 
     # Stage 2: Per-object scale estimation via ZoeDepth metric depth + CLIP
-    run(["python", "-m", "scripts.compute_scale_video", "--video", video, "--proposals", props])
+    run(["python", "-m", "scripts.compute_scale_video", "--video", video, "--proposals", props, "--backend", "videos"])
 
     # Stage 3: Select best object track (by IoU vs GT if available, else by mean score)
     gt_path = FREEPOSE_ROOT / "data" / "video_gt" / f"{video}_poses_id1.npy"
@@ -136,13 +149,27 @@ def main():
 
     print(f"\nDone. 6D pose trajectory written to:\n  {output}")
 
-    # Stage 6: Visualize poses (mesh overlay + 3D bounding-box with 6DoF pose)
+    # Stage 6: Visualize poses. Two passes:
+    #   --bbox          → data/results/videos/<video>/viz_bbox_<video>-tracked/
+    #   --bbox --axes   → data/results/videos/<video>/viz_bbox_pose_<video>-tracked/
     run([
         "python", "-m", "scripts.vis_poses_video",
         "--video", video,
         "--predictions", str(output),
         "--bbox",
     ])
+    run([
+        "python", "-m", "scripts.vis_poses_video",
+        "--video", video,
+        "--predictions", str(output),
+        "--bbox",
+        "--axes",
+    ])
+
+    # Stage 7: Encode the bbox and bbox+pose visualization frames into 30fps videos
+    results_dir = FREEPOSE_ROOT / "data" / "results" / "videos" / video
+    frames_to_video(results_dir / f"viz_bbox_{video}-tracked", results_dir / "bbox.mp4")
+    frames_to_video(results_dir / f"viz_bbox_pose_{video}-tracked", results_dir / "bbox_pose.mp4")
 
 if __name__ == "__main__":
     main()

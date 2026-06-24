@@ -124,6 +124,17 @@ python run_inference_weighted.py \
   --mask_prompt stuffed_toy \
   --da3_output ./da3_outputs/example/da3_output.npz
 ```
+### Personal example
+```
+python scripts/run_da3.py \
+  --image_dir scratch/frames/P01-20240202-110250_3_knife/images \
+  --output_dir scratch/da3_outputs/P01-20240202-110250_3_knife
+
+python run_inference_weighted.py \
+  --input_path /share/hariharan/kh775/code/freepose/MV-SAM3D/scratch/frames/P01-20240202-110250_3_knife \
+  --mask_prompt knife \
+  --da3_output /share/hariharan/kh775/code/freepose/MV-SAM3D/scratch/da3_outputs/P01-20240202-110250_3_knife/da3_output.npz
+```
 
 ### Multi-object inference
 

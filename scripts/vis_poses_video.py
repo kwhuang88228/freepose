@@ -66,6 +66,66 @@ def _draw_axes(img, K, R, t, length, thickness=3):
                         _AXIS_COLORS[key], thickness, cv2.LINE_AA, tipLength=0.25)
 
 
+def _save_bbox3d_axis_mpl(img_rgb, objects, out_path):
+    """Draw 3D bounding box + XYZ coordinate axes in the inference_v3.py style.
+
+    Red=X, Green(lime)=Y, Blue=Z, rendered as thin matplotlib arrows with a
+    white origin dot. Ported from scripts/kalman_smooth_poses._save_bbox3d_axis;
+    here R/t come directly from the tracked CSV (one entry per object).
+    """
+    from matplotlib import pyplot as plt
+
+    def _proj(pt_obj, K, R, t):
+        cam = R @ pt_obj + t
+        if cam[2] <= 0:
+            return None
+        p = K @ cam
+        return p[:2] / p[2]
+
+    fig, ax = plt.subplots(1, 1, figsize=(img_rgb.shape[1] / 100, img_rgb.shape[0] / 100))
+    ax.set_axis_off()
+    ax.imshow(img_rgb)
+    color_map = {"r": "red", "g": "lime", "b": "blue"}
+    # 12 box edges grouped by axis direction, matching _get_bbox_corners() order.
+    edges = {
+        "r": [(0, 1), (3, 2), (4, 5), (7, 6)],
+        "g": [(0, 3), (1, 2), (4, 7), (5, 6)],
+        "b": [(0, 4), (1, 5), (2, 6), (3, 7)],
+    }
+
+    for obj in objects:
+        K, R, t, corners, axis_len = obj["K"], obj["R"], obj["t"], obj["corners"], obj["axis_len"]
+
+        corners_cam = (R @ corners.T + t[:, None]).T
+        proj_c = K @ corners_cam.T
+        uv = (proj_c[:2] / proj_c[2]).T
+        in_front = corners_cam[:, 2] > 0
+        for axis_key, edge_list in edges.items():
+            for i, j in edge_list:
+                if not (in_front[i] and in_front[j]):
+                    continue
+                ax.plot([uv[i, 0], uv[j, 0]], [uv[i, 1], uv[j, 1]],
+                        color=color_map[axis_key], linewidth=1.5)
+
+        origin_uv = _proj(np.zeros(3), K, R, t)
+        if origin_uv is None:
+            continue
+        x_tip_uv = _proj(np.array([axis_len, 0.0, 0.0]), K, R, t)
+        y_tip_uv = _proj(np.array([0.0, axis_len, 0.0]), K, R, t)
+        z_tip_uv = _proj(np.array([0.0, 0.0, axis_len]), K, R, t)
+        for tip_uv, color in [(x_tip_uv, "red"), (y_tip_uv, "lime"), (z_tip_uv, "blue")]:
+            if tip_uv is None:
+                continue
+            ax.annotate("", xy=(tip_uv[0], tip_uv[1]), xytext=(origin_uv[0], origin_uv[1]),
+                        arrowprops=dict(arrowstyle="->", color=color, lw=2.0))
+        # ax.scatter([origin_uv[0]], [origin_uv[1]], s=20, c="white", zorder=5)
+
+    ax.set_xlim(0, img_rgb.shape[1])
+    ax.set_ylim(img_rgb.shape[0], 0)
+    plt.savefig(str(out_path), bbox_inches="tight", pad_inches=0)
+    plt.close(fig)
+
+
 def _draw_pose_text(img, R, t, origin_2d, obj_idx):
     rx, ry, rz = Rotation.from_matrix(R).as_euler('xyz', degrees=True)
     tx, ty, tz = t
@@ -158,9 +218,12 @@ def main(args):
     cy = h/2
     K = np.array([[f, 0, cx], [0, f, cy], [0, 0, 1]])
 
-    # Optional: second output directory for 3-D bounding-box visualization
+    # Optional: second output directory for 3-D bounding-box visualization.
+    # With --axes, also draw the RGB pose axes at the object center and save to
+    # viz_bbox_pose_<stem>/ instead of viz_bbox_<stem>/.
     if args.bbox:
-        bbox_dir = pred_path.parent / f'viz_bbox_{pred_path.stem}'
+        suffix = 'bbox_pose' if args.axes else 'bbox'
+        bbox_dir = pred_path.parent / f'viz_{suffix}_{pred_path.stem}'
         bbox_dir.mkdir(exist_ok=True, parents=True)
 
     for frame_idx, frame_path in tqdm(enumerate(frame_paths), ncols=100, total=len(frame_paths)):
@@ -198,7 +261,19 @@ def main(args):
         frame.save(viz_dir / f'{frame_idx:06d}.png')
 
         # ── 3-D bounding-box visualization (--bbox) ───────────────────────────
-        if args.bbox:
+        if args.bbox and args.axes:
+            # inference_v3.py-style: matplotlib bbox + RGB coordinate axes
+            img_rgb = np.array(Image.open(frame_path))
+            objects = []
+            for obj_idx, (mesh, corners) in enumerate(zip(meshes, all_bbox_corners)):
+                row = objects_pred[obj_idx].iloc[frame_idx]
+                R = np.array([float(x) for x in row['R'].split(' ')]).reshape(3, 3)
+                t = np.array([float(x) for x in row['t'].split(' ')])
+                axis_len = np.max(mesh.bounds[1] - mesh.bounds[0]) * 0.5
+                objects.append({"K": K, "R": R, "t": t, "corners": corners, "axis_len": axis_len})
+            _save_bbox3d_axis_mpl(img_rgb, objects, bbox_dir / f'{frame_idx:06d}.png')
+
+        elif args.bbox:
             img = cv2.cvtColor(np.array(Image.open(frame_path)), cv2.COLOR_RGB2BGR)
             for obj_idx, (mesh, corners) in enumerate(zip(meshes, all_bbox_corners)):
                 row = objects_pred[obj_idx].iloc[frame_idx]
@@ -207,9 +282,6 @@ def main(args):
 
                 corners_2d = _project(corners, K, R, t)
                 _draw_bbox_3d(img, corners_2d)
-
-                # axis_len = np.max(mesh.bounds[1] - mesh.bounds[0]) * 0.4
-                # _draw_axes(img, K, R, t, axis_len)
 
                 # center_2d = _project(np.zeros((1, 3)), K, R, t)[0]
                 # _draw_pose_text(img, R, t, center_2d + np.array([6, 6]), obj_idx)
@@ -226,6 +298,10 @@ if __name__ == "__main__":
     parser.add_argument("--bbox", action="store_true",
                         help="Also render a 3-D bounding-box visualization showing 6DoF pose "
                              "(saved to viz_bbox_<stem>/ next to the mesh overlay).")
+    parser.add_argument("--axes", action="store_true",
+                        help="With --bbox, also draw the RGB 3-D coordinate axes "
+                             "(X=red, Y=green, Z=blue) at the object center; output is saved "
+                             "to viz_bbox_pose_<stem>/ instead of viz_bbox_<stem>/.")
 
     args = parser.parse_args()
     main(args)

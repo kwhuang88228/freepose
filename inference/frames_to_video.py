@@ -6,7 +6,7 @@ import subprocess
 from tqdm import tqdm
 
 
-def frames_to_video(frames_dir, output_path, fps=16):
+def frames_to_video(frames_dir, output_path, fps=30):
 
     frames_pattern = os.path.join(str(frames_dir), "*.png")
     if not glob.glob(frames_pattern):

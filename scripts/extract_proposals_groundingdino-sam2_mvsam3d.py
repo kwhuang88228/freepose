@@ -217,9 +217,9 @@ if __name__ == "__main__":
     logger.info(f"SAM2 binary masks → {sam2_binary_masks_dir}")
 
     # Convert selected frames to video
-    frames_to_video(sam2_boxes_dir, debug_tracking / "boxes.mp4", fps=16)
-    frames_to_video(sam2_masks_overlay_dir, debug_tracking / "masks_overlay.mp4", fps=16)
-    frames_to_video(sam2_binary_masks_dir, debug_tracking / "binary_masks.mp4", fps=16)
+    frames_to_video(sam2_boxes_dir, debug_tracking / "boxes.mp4", fps=30)
+    frames_to_video(sam2_masks_overlay_dir, debug_tracking / "masks_overlay.mp4", fps=30)
+    frames_to_video(sam2_binary_masks_dir, debug_tracking / "binary_masks.mp4", fps=30)
     logger.info(f"Saved selected frames video → {debug_tracking}")
 
     # ── Stage 1c: Prepare MV-SAM3D input structure ────────────────────────────

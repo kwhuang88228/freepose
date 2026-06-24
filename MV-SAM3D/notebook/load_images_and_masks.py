@@ -76,7 +76,7 @@ def load_images_and_masks(
         raise ValueError(f"Path is not a directory: {images_and_masks_dir}")
     
     if image_names is None:
-        image_files = list(images_and_masks_dir.glob("*.png")) + list(images_and_masks_dir.glob("*.jpg"))
+        image_files = list(images_and_masks_dir.glob("*.png")) + list(images_and_masks_dir.glob("*.jpg")) 
         image_files = [f for f in image_files if "_mask" not in f.name]
         
         # Sort with natural number ordering (consistent with DA3 script)

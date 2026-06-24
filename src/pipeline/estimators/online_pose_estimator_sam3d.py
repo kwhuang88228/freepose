@@ -40,7 +40,7 @@ class DinoPoseEstimatorSam3d(DinoPoseEstimator):
 
     def forward(self, proposal, template_dict, K, bbox, est_scale,
                 layer=22, batch_size=128, return_query_feat=False, proposal_mask=None,
-                use_query_fg_patches=True, use_template_fg_patches=False):
+                use_query_fg_patches=True, use_template_fg_patches=False, top_k=5):
         """Same flow as DinoPoseEstimator.forward but adapted for SAM-3D depth."""
         if self.cache_size > 0:
             feats_template = self._get_template_features(template_dict, layer=layer, batch_size=batch_size)
@@ -78,7 +78,7 @@ class DinoPoseEstimatorSam3d(DinoPoseEstimator):
         else:
             scores = per_patch_sim.mean(dim=-1)
 
-        top_scores, top_indices = torch.topk(scores, 5)
+        top_scores, top_indices = torch.topk(scores, top_k)
         top_scores  = top_scores.float().cpu().numpy()
         top_indices = top_indices.cpu().numpy()
 
@@ -89,7 +89,7 @@ class DinoPoseEstimatorSam3d(DinoPoseEstimator):
             'K': K,
             'bbox': bbox,
             'retrieved_proposals':    [template_dict['templates'][idx] for idx in top_indices],
-            'retrieved_template_ids': top_indices,  # (5,) int, indices 0..599 matching templates_cropped/
+            'retrieved_template_ids': top_indices,
         }
 
         K_render = template_dict['intrinsic'].numpy()  # pixel-space K of SAM-3D render

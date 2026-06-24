@@ -44,7 +44,7 @@ def main(args):
     video_dir = (Path("data") / "datasets" / "videos" / args.video).resolve()
     frame_names = sorted([
         p for p in video_dir.iterdir()
-        if p.suffix.lower() in [".jpg", ".jpeg"]
+        if p.suffix.lower() in [".jpg", ".jpeg", ".png"]
     ])
 
     results_dir = (Path("data") / "results" / "videos" / args.video).resolve()
