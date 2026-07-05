@@ -261,6 +261,58 @@ def _save_bbox3d_axis(img, gs, K, R, t, scale, box, out_path: Path):
     plt.close(fig)
 
 
+def _save_axis(img, gs, K, R, t, scale, box, out_path: Path):
+    """Draw only the XYZ coordinate axes at the projected object centroid.
+
+    Red=X, Green=Y, Blue=Z. Axis length = half the object diameter. Same t
+    re-derivation as _save_bbox3d_axis, but without the 3D bounding box.
+    """
+    gs_xyz_world  = gs.get_xyz.detach().cpu().numpy()
+    gs_diameter_m = (gs_xyz_world.max(0) - gs_xyz_world.min(0)).max() * scale
+    bbox_px       = max(box[2] - box[0], box[3] - box[1]) + 1.0
+    z_correct     = K[0, 0] * gs_diameter_m / bbox_px
+    bb_center     = np.array([(box[0] + box[2]) / 2.0, (box[1] + box[3]) / 2.0])
+    t = np.array([
+        (bb_center[0] - K[0, 2]) * z_correct / K[0, 0],
+        (bb_center[1] - K[1, 2]) * z_correct / K[1, 1],
+        z_correct,
+    ])
+    axis_len = gs_diameter_m * 0.5
+
+    def _proj(pt_obj):
+        cam = R @ pt_obj + t
+        if cam[2] <= 0:
+            return None
+        p = K @ cam
+        return p[:2] / p[2]
+
+    origin_uv = _proj(np.zeros(3))
+    x_tip_uv  = _proj(np.array([axis_len, 0.0, 0.0]))
+    y_tip_uv  = _proj(np.array([0.0, axis_len, 0.0]))
+    z_tip_uv  = _proj(np.array([0.0, 0.0, axis_len]))
+
+    fig, ax = plt.subplots(1, 1, figsize=(img.shape[1] / 100, img.shape[0] / 100))
+    ax.set_axis_off()
+    ax.imshow(img)
+
+    if origin_uv is not None:
+        for tip_uv, color in [
+            (x_tip_uv, "red"),
+            (y_tip_uv, "lime"),
+            (z_tip_uv, "blue"),
+        ]:
+            if tip_uv is None:
+                continue
+            ax.annotate("", xy=(tip_uv[0], tip_uv[1]), xytext=(origin_uv[0], origin_uv[1]),
+                        arrowprops=dict(arrowstyle="->", color=color, lw=2.0))
+        ax.scatter([origin_uv[0]], [origin_uv[1]], s=20, c="white", zorder=5)
+
+    ax.set_xlim(0, img.shape[1])
+    ax.set_ylim(img.shape[0], 0)
+    plt.savefig(str(out_path), bbox_inches="tight", pad_inches=0)
+    plt.close(fig)
+
+
 def _save_centroid_projection(img, gs, K, R, t, scale, box, out_path: Path, n_pts: int = 2000):
     """Scatter Gaussian centroids projected onto the image frame.
 

@@ -32,7 +32,10 @@ class DensePredictor3D(torch.nn.Module):
         device = video.device
         src_step = grid_query_frame
 
-        ori_video = video.clone()
+        # `video` is rebound to a new downsampled tensor below (F.interpolate
+        # returns a new tensor), so this reference safely retains the full-res
+        # original without an ~8 GB clone. ori_video is only read afterwards.
+        ori_video = video
 
         if scale_input:
             video = F.interpolate(
