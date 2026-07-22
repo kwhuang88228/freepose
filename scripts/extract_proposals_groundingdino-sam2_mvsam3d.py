@@ -149,14 +149,18 @@ if __name__ == "__main__":
     parser.add_argument("--reverse",     action="store_true")
     parser.add_argument("--prompt",      type=str, default="objects.")
     parser.add_argument("--num_views",   type=int, default=6,
-                        help="Number of evenly-spaced frames to select for MV-SAM3D (default: 6)")
+                        help="Number of randomly-sampled frames to select for MV-SAM3D (default: 6)")
+    parser.add_argument("--results_dir", type=str, default=None,
+                        help="Directory for results/debug output "
+                             "(default: <FREEPOSE_ROOT>/data/results/mvsam3d/<video>)")
     args = parser.parse_args()
 
     device      = "cuda" if torch.cuda.is_available() else "cpu"
     video_dir   = Path("data/datasets/videos") / args.video
     frame_paths = sorted([p for p in video_dir.iterdir() if p.suffix.lower() == ".png"])
 
-    results_dir = _FREEPOSE_ROOT / "data" / "results" / "mvsam3d" / args.video
+    results_dir = (Path(args.results_dir).resolve() if args.results_dir
+                   else _FREEPOSE_ROOT / "data" / "results" / "mvsam3d" / args.video)
     results_dir.mkdir(parents=True, exist_ok=True)
     prompt_slug = args.prompt.rstrip(".").strip().replace(" ", "_").replace("/", "_") or "objects"
     output_file = results_dir / f"mvsam3d_{args.video}_{prompt_slug}.json"
@@ -226,7 +230,6 @@ if __name__ == "__main__":
     valid_frame_idxs = sorted(tracking_output.keys())
     num_views = min(args.num_views, len(valid_frame_idxs))
     step = len(valid_frame_idxs) / num_views
-    # selected_idxs = [valid_frame_idxs[int(i * step)] for i in range(num_views)]
     selected_idxs = random.sample(range(len(valid_frame_idxs)), num_views)
 
     mvsam3d_input_dir = results_dir / "mvsam3d_input"

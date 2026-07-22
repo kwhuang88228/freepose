@@ -1949,7 +1949,7 @@ def get_output_dir(
     dir_name = f"{dir_name}_{timestamp}"
     
     # Create hierarchical directory structure
-    output_dir = visualization_dir / dataset_name / mask_name / dir_name
+    output_dir = visualization_dir / dataset_name / mask_name
     output_dir.mkdir(parents=True, exist_ok=True)
     
     logger.info(f"Output directory: {output_dir}")

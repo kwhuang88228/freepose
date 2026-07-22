@@ -106,6 +106,7 @@ def pointmap_to_sam3d_format(pointmap: np.ndarray) -> np.ndarray:
 def run_da3_inference(
     image_dir: str,
     output_dir: str,
+    output_npz: Optional[str] = None,
     model_path: Optional[str] = None,
     process_res: int = 504,
     save_visualization: bool = True,
@@ -117,6 +118,7 @@ def run_da3_inference(
     Args:
         image_dir: Path to folder containing input images
         output_dir: Path to output directory
+        output_npz: Path for the da3_output.npz (default: <output_dir>/da3_output.npz)
         model_path: Path to DA3 model checkpoint (default: auto-detect)
         process_res: Processing resolution (default: 504)
         save_visualization: Whether to save GLB and depth visualizations
@@ -183,10 +185,6 @@ def run_da3_inference(
     if len(image_files) == 0:
         raise ValueError(f"No images found in {image_dir}")
     
-    print(f"Found {len(image_files)} images:")
-    for f in image_files:
-        print(f"  - {f.name}")
-    
     # Build export format
     export_format = "mini_npz"
     if save_visualization:
@@ -237,7 +235,8 @@ def run_da3_inference(
     print(f"  Z range: [{pointmaps[:, :, :, 2].min():.4f}, {pointmaps[:, :, :, 2].max():.4f}] (should be positive)")
     
     # Save comprehensive output
-    output_file = output_path / "da3_output.npz"
+    output_file = Path(output_npz) if output_npz is not None else output_path / "da3_output.npz"
+    output_file.parent.mkdir(parents=True, exist_ok=True)
     np.savez(
         output_file,
         depth=depth,                          # (N, H, W)
@@ -300,13 +299,19 @@ Examples:
         help="Path to folder containing input images"
     )
     parser.add_argument(
-        "--output_dir", 
-        type=str, 
+        "--output_dir",
+        type=str,
         required=True,
         help="Path to output directory"
     )
     parser.add_argument(
-        "--model_path", 
+        "--output_npz",
+        type=str,
+        default=None,
+        help="Path for the da3_output.npz (default: <output_dir>/da3_output.npz)"
+    )
+    parser.add_argument(
+        "--model_path",
         type=str, 
         default=None,
         help="Path to DA3 model checkpoint (default: auto-detect)"
@@ -334,6 +339,7 @@ Examples:
     run_da3_inference(
         image_dir=args.image_dir,
         output_dir=args.output_dir,
+        output_npz=args.output_npz,
         model_path=args.model_path,
         process_res=args.process_res,
         save_visualization=not args.no_vis,

@@ -31,7 +31,9 @@ from loop_utils.alignment_torch import (
     depth_to_point_cloud_optimized_torch,
 )
 from loop_utils.config_utils import load_config
-from loop_utils.loop_detector import LoopDetector
+# NOTE: LoopDetector is imported lazily inside __init__ (only when loop_enable is
+# True) so this module stays importable without the optional SALAD submodule /
+# faiss when loop closure is disabled.
 from loop_utils.sim3loop import Sim3LoopOptimizer
 from loop_utils.sim3utils import (
     accumulate_sim3_transforms,
@@ -191,6 +193,7 @@ class DA3_Streaming:
         self.loop_enable = self.config["Model"]["loop_enable"]
 
         if self.loop_enable:
+            from loop_utils.loop_detector import LoopDetector
             loop_info_save_path = os.path.join(save_dir, "loop_closures.txt")
             self.loop_detector = LoopDetector(
                 image_dir=image_dir, output=loop_info_save_path, config=self.config

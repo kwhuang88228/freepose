@@ -2,6 +2,7 @@ import json
 
 import numpy as np
 import torch
+from loguru import logger
 from numpy.linalg import svd
 from scipy.spatial import KDTree
 from skimage.morphology import isotropic_erosion
@@ -69,10 +70,25 @@ class GPT4ScaleEstimator:
             chatgpt_scales = self.scales[idx].numpy()
         else:
             # Get median scale over args.query_k most similar descriptors for each mask
-            chatgpt_scales = self.scales[idx.reshape(-1)].reshape(idx.shape).median(axis=1).values
+            retrieved_scales = self.scales[idx.reshape(-1)].reshape(idx.shape)
+            chatgpt_scales = retrieved_scales.median(axis=1).values
+            logger.info(
+                f"GPT-looked-up sizes (m) of {self.query_k} nearest objects per mask: "
+                f"{retrieved_scales.numpy().tolist()}"
+            )
+            logger.info(
+                f"GPT averaged (median) size (m) per mask: {chatgpt_scales.numpy().tolist()}"
+            )
 
         if use_depth:
             correction = np.median(chatgpt_scales/depth_scales)
+            logger.info(
+                f"Correction inputs -- chatgpt_scales (m): {np.asarray(chatgpt_scales).tolist()} | "
+                f"depth_scales (m): {np.asarray(depth_scales).tolist()}"
+            )
+            logger.info(
+                f"Single per-frame correction factor (all objects): {float(correction)}"
+            )
             scales = depth_scales*correction
         else:
             scales = chatgpt_scales

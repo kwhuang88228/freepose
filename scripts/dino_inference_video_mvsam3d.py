@@ -2,7 +2,7 @@
 dino_inference_video_mvsam3d.py
 
 Stage 4 of the MV-SAM3D pipeline:
-  1. Load each object's Gaussian splat (path stored in proposals JSON 'mesh' field).
+  1. Load each object's Gaussian splat (path passed via the --mesh argument).
   2. Pre-render Hopf-Hammersley SO(3) views of the splat → coarse template bank.
   3. Run DinoOnlinePoseEstimatorSam3d per frame: coarse DINOv2 matching +
      fine-pose neighbourhood refinement.
@@ -48,7 +48,7 @@ os.environ["PYOPENGL_PLATFORM"] = "egl"
 
 # ── Template dict builder ──────────────────────────────────────────────────────
 
-def build_template_dict(gs, model_name: str, n_views: int = 7200,
+def build_template_dict(gs, model_name: str, n_views: int = 3600,
                         bbox_extend: float = 0.05,
                         mask_template: bool = False, debug_dir=None):
     """Render Hopf-Hammersley SO(3) views of *gs* and package them as a template_dict.
@@ -95,7 +95,9 @@ def build_template_dict(gs, model_name: str, n_views: int = 7200,
     #   - mask flag avoids masked/unmasked feature collision
     #   - _hopf invalidates caches built with the older S²×S¹ product sampler
     #   - _n{N} prevents collision between runs at different total view counts
-    cache_name = f"{model_name}_tmpl{'m' if mask_template else 'u'}_hopf_n{n_views}"
+    #   - stem only: the key is joined onto cache_dir as a path, so separators in an
+    #     absolute/relative mesh path would write the cache outside cache_dir
+    cache_name = f"{Path(model_name).stem}_tmpl{'m' if mask_template else 'u'}_hopf_n{n_views}"
     # Store SAM-3D TCO_init matrices in the renderer for get_z_from_pointcloud
     return {
         "model_name":    cache_name,
@@ -117,22 +119,11 @@ def _save_bbox_3d(img, gs, K, R, t, scale, box, out_path: Path):
     """Draw the 3D bounding box of the Gaussian splat on the image.
 
     Edges parallel to X are drawn in Red, Y in Green, Z in Blue.
-    Uses the same t re-derivation as _save_centroid_projection.
+    Translation t is supplied by the caller (DA3-based when available; see main()).
     """
     gs_xyz_world = gs.get_xyz.detach().cpu().numpy()
     xyz_min = gs_xyz_world.min(0) * scale
     xyz_max = gs_xyz_world.max(0) * scale
-
-    # Re-derive t (same logic as _save_centroid_projection)
-    gs_diameter_m = (gs_xyz_world.max(0) - gs_xyz_world.min(0)).max() * scale
-    bbox_px = max(box[2] - box[0], box[3] - box[1]) + 1.0
-    z_correct = K[0, 0] * gs_diameter_m / bbox_px
-    bb_center = np.array([(box[0] + box[2]) / 2.0, (box[1] + box[3]) / 2.0])
-    t = np.array([
-        (bb_center[0] - K[0, 2]) * z_correct / K[0, 0],
-        (bb_center[1] - K[1, 2]) * z_correct / K[1, 1],
-        z_correct,
-    ])
 
     # 8 corners of the 3D bounding box in object space
     xn, yn, zn = xyz_min
@@ -184,20 +175,12 @@ def _save_bbox3d_axis(img, gs, K, R, t, scale, box, out_path: Path):
     """Draw XYZ coordinate axes and 3D bounding box at the projected object centroid.
 
     Red=X, Green=Y, Blue=Z. Axis length = half the object diameter.
-    Uses the same t re-derivation as _save_bbox_3d.
+    Translation t is supplied by the caller (DA3-based when available; see main()).
     """
     gs_xyz_world  = gs.get_xyz.detach().cpu().numpy()
     xyz_min = gs_xyz_world.min(0) * scale
     xyz_max = gs_xyz_world.max(0) * scale
     gs_diameter_m = (gs_xyz_world.max(0) - gs_xyz_world.min(0)).max() * scale
-    bbox_px       = max(box[2] - box[0], box[3] - box[1]) + 1.0
-    z_correct     = K[0, 0] * gs_diameter_m / bbox_px
-    bb_center     = np.array([(box[0] + box[2]) / 2.0, (box[1] + box[3]) / 2.0])
-    t = np.array([
-        (bb_center[0] - K[0, 2]) * z_correct / K[0, 0],
-        (bb_center[1] - K[1, 2]) * z_correct / K[1, 1],
-        z_correct,
-    ])
     axis_len = gs_diameter_m * 0.5
 
     def _proj(pt_obj):
@@ -316,24 +299,11 @@ def _save_axis(img, gs, K, R, t, scale, box, out_path: Path):
 def _save_centroid_projection(img, gs, K, R, t, scale, box, out_path: Path, n_pts: int = 2000):
     """Scatter Gaussian centroids projected onto the image frame.
 
-    The gsplat renderer does not output depth, so get_z_from_pointcloud falls back
-    to the raw SAM-3D extrinsic z (~2.0 in SAM-3D world units) rather than computing
-    a real-world metric z from the video bbox.  We override t here using the estimated
-    scale and the detected bbox so the projected cloud appears at the correct depth.
+    Translation t is supplied by the caller (DA3-based metric depth when available,
+    else the bbox-size heuristic; see main()), so the projected cloud appears at the
+    estimated depth.
     """
     xyz = gs.get_xyz.detach().cpu().numpy() * scale
-
-    # Re-derive t from scale + bbox (the TCO t[2] is unreliable; see docstring).
-    gs_xyz_world = gs.get_xyz.detach().cpu().numpy()
-    gs_diameter_m = (gs_xyz_world.max(0) - gs_xyz_world.min(0)).max() * scale
-    bbox_px = max(box[2] - box[0], box[3] - box[1]) + 1.0
-    z_correct = K[0, 0] * gs_diameter_m / bbox_px
-    bb_center = np.array([(box[0] + box[2]) / 2.0, (box[1] + box[3]) / 2.0])
-    t = np.array([
-        (bb_center[0] - K[0, 2]) * z_correct / K[0, 0],
-        (bb_center[1] - K[1, 2]) * z_correct / K[1, 1],
-        z_correct,
-    ])
 
     if len(xyz) > n_pts:
         idx = np.random.choice(len(xyz), n_pts, replace=False)
@@ -386,13 +356,117 @@ def _dir_to_video(frames_dir: Path, out_path: Path, fps: int = 30) -> None:
     logger.info(f"Video saved → {out_path}")
 
 
+# ── DA3-depth translation z ──────────────────────────────────────────────────────
+
+def _load_da3_depths(npz_path):
+    """Load DA3 depth maps → {frame_stem: (H, W) float32}.
+
+    Kept at DA3's native resolution; masks are downsized to match at sample time
+    (see _da3_z), which is cheaper than upsampling every depth map.
+    """
+    data  = np.load(npz_path, allow_pickle=True)
+    depth = data["depth"]                                   # (N, H, W)
+    stems = [Path(str(f)).stem for f in data["image_files"]]
+    return {stem: np.asarray(depth[i], dtype=np.float32) for i, stem in enumerate(stems)}
+
+
+def _load_da3_window_id(npz_path):
+    """Load the per-frame DA3 window id, or None if the npz predates windowing.
+
+    DA3 processes long videos in overlapping windows and stitches them with one
+    scalar per seam fit over the whole (background-dominated) image. That scalar
+    makes the far background continuous but leaves the near foreground object
+    mis-scaled, so the object depth steps ~1.3x at each seam (see _deseam_object_depth).
+    The window id marks where those seams are so they can be removed on the object.
+    """
+    data = np.load(npz_path, allow_pickle=True)
+    if "window_id" not in data.files:
+        return None
+    return np.asarray(data["window_id"]).astype(int)
+
+
+def _deseam_object_depth(depth_series, window_id):
+    """Per-frame multiplicative factors that align every DA3 window's object depth
+    to the first window's scale, removing the between-window seam steps.
+
+    depth_series : (N,) raw object median DA3 depth (NaN where the object is missing).
+    window_id    : (N,) DA3 window each frame came from (monotone, steps at seams).
+
+    Intra-window depth is left untouched; at each seam the step is estimated from
+    the robust median depth of the 3 frames on each side (object motion within a
+    window is smooth, so a step there is the artifact) and divided out cumulatively.
+    The first window is the anchor (factor 1.0) because the metric scale `alpha`
+    is calibrated on it. Returns (N,) factors (1.0 everywhere if no seams).
+    """
+    depth_series = np.asarray(depth_series, dtype=float)
+    n = len(depth_series)
+    factors = np.ones(n)
+    if window_id is None:
+        return factors
+    cum = 1.0
+    for b in range(1, n):
+        if window_id[b] == window_id[b - 1]:
+            continue
+        before = np.nanmedian(depth_series[max(0, b - 3):b])
+        after  = np.nanmedian(depth_series[b:b + 3])
+        if np.isfinite(before) and np.isfinite(after) and before > 0 and after > 0:
+            cum /= (after / before)
+        factors[b:] = cum
+    return factors
+
+
+def _da3_z(depth_map, mask, alpha, erode_px: int = 6, min_px: int = 25):
+    """Robust metric object depth: alpha * median of DA3 depth over the (eroded)
+    object mask. Returns None if depth/mask are missing or too small to trust."""
+    if depth_map is None or mask is None:
+        return None
+    m = np.asarray(mask).astype(bool)
+    if m.sum() < min_px:
+        return None
+    Hd, Wd = depth_map.shape[:2]
+    if m.shape != (Hd, Wd):
+        m = cv2.resize(m.astype(np.uint8), (Wd, Hd), interpolation=cv2.INTER_NEAREST).astype(bool)
+    m_e = cv2.erode(m.astype(np.uint8), np.ones((erode_px, erode_px), np.uint8)).astype(bool)
+    if m_e.sum() >= min_px:                                 # keep raw mask if too thin to erode
+        m = m_e
+    vals = depth_map[m]
+    vals = vals[np.isfinite(vals) & (vals > 0)]
+    if vals.size < min_px:
+        return None
+    med  = float(np.median(vals))
+    keep = np.abs(vals - med) < 1.5 * (float(np.std(vals)) + 1e-6)
+    if keep.sum() >= min_px:
+        med = float(np.median(vals[keep]))
+    return alpha * med
+
+
+def _bbox_z(gs, scale, box_xyxy, K):
+    """Original bbox-size depth heuristic: z = f * (mesh diameter * scale) / bbox_px."""
+    gs_xyz = gs.get_xyz.detach().cpu().numpy()
+    diam   = (gs_xyz.max(0) - gs_xyz.min(0)).max() * scale
+    bpx    = max(box_xyxy[2] - box_xyxy[0], box_xyxy[3] - box_xyxy[1]) + 1.0
+    return float(K[0, 0] * diam / bpx)
+
+
+def _override_translation(TCO, z, box_xyxy, K):
+    """Return a copy of TCO with translation set from the bbox center at depth z."""
+    cx = (box_xyxy[0] + box_xyxy[2]) / 2.0
+    cy = (box_xyxy[1] + box_xyxy[3]) / 2.0
+    TCO = TCO.copy()
+    TCO[0, 3] = (cx - K[0, 2]) * z / K[0, 0]
+    TCO[1, 3] = (cy - K[1, 2]) * z / K[1, 1]
+    TCO[2, 3] = z
+    return TCO
+
+
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def main(args):
     video_dir   = (Path("data") / "datasets" / "videos" / args.video).resolve()
     frame_names = sorted([p for p in video_dir.iterdir() if p.suffix.lower() in [".png"]])
 
-    results_dir    = (Path("data") / "results" / "mvsam3d" / args.video).resolve()
+    results_dir    = (Path(args.results_dir) if args.results_dir
+                      else Path("data") / "results" / "mvsam3d" / args.video).resolve()
     proposals_path = results_dir / args.proposals
 
     pose_outputs = results_dir / args.proposals.replace(
@@ -407,14 +481,16 @@ def main(args):
     )
 
     # Debug directories
-    debug_dir = _FREEPOSE_ROOT / "data" / "results" / "mvsam3d" / args.video / "04_coarse_poses"
+    debug_dir = results_dir / "04_coarse_poses"
     debug_gaussian_dir       = debug_dir / "gaussian"
     debug_bbox3d_dir         = debug_dir / "bbox3d"
+    debug_axis_dir           = debug_dir / "axis"
     debug_bbox3d_axis_dir    = debug_dir / "bbox3d_axis"
     debug_retrieved_tmpl_dir = debug_dir / "retrieved_templates"
     # debug_segmented_dir        = debug_dir / "object_segmented"
     debug_gaussian_dir.mkdir(parents=True, exist_ok=True)
     debug_bbox3d_dir.mkdir(parents=True, exist_ok=True)
+    debug_axis_dir.mkdir(parents=True, exist_ok=True)
     debug_bbox3d_axis_dir.mkdir(parents=True, exist_ok=True)
     debug_retrieved_tmpl_dir.mkdir(parents=True, exist_ok=True)
     # debug_segmented_dir.mkdir(parents=True, exist_ok=True)
@@ -444,7 +520,9 @@ def main(args):
     props = [props[i : i + n_objects] for i in range(0, len(props), n_objects)]
 
     # ── Scale estimation ───────────────────────────────────────────────────────
-    if args.depth_method == "zoedepth":
+    # "da3": use the per-object scale precomputed in the proposals JSON (DA3 depth
+    # + CLIP, from compute_scale_video.py). Asserted constant across frames.
+    if args.depth_method == "da3":
         scales = [props[0][obj_idx]["scale"] for obj_idx in range(n_objects)]
         for i in range(n_objects):
             assert all(
@@ -463,8 +541,7 @@ def main(args):
     template_dicts  = []
 
     for i in range(n_objects):
-        splat_path = props[0][i]["mesh"]          # relative path, e.g. "data/gaussian_splats/..."
-        assert all(props[f][i]["mesh"] == splat_path for f in range(n_frames))
+        splat_path = args.mesh                    # relative path, e.g. "data/gaussian_splats/..."
 
         ply_abs = _FREEPOSE_ROOT / splat_path
         logger.info(f"  Object {i}: {ply_abs}")
@@ -488,6 +565,43 @@ def main(args):
     h, w = img0.shape[:2]
     f_px = np.sqrt(h**2 + w**2)
     K    = np.array([[f_px, 0, w / 2.0], [0, f_px, h / 2.0], [0, 0, 1]], dtype=float)
+
+    # ── DA3 depth for translation z (optional) ─────────────────────────────────
+    # If a DA3 npz is given, object translation z is measured from DA3 depth at the
+    # object mask (robust to occlusion) instead of the bbox-size heuristic. DA3-nested
+    # depth may be up to a global scale, so anchor it per object with a single factor
+    # alpha = z_bbox / z_da3 on that object's best-visible (largest-mask) frame, where
+    # the bbox heuristic is reliable. --assume_metric skips the anchor (alpha=1).
+    da3_depths = None
+    alphas     = [1.0] * n_objects
+    deseam     = [np.ones(n_frames) for _ in range(n_objects)]        # per-window object-depth seam correction
+    if args.da3_depth:
+        da3_depths = _load_da3_depths(args.da3_depth)
+        window_id  = _load_da3_window_id(args.da3_depth)
+        for obj_idx in range(n_objects):
+            # Per-frame raw (alpha=1) object depth + track the best-visible frame.
+            depth_series    = np.full(n_frames, np.nan)
+            best_area, best = -1, None
+            for f in range(n_frames):
+                m  = rle_to_mask(props[f][obj_idx]["segmentation"])
+                dz = _da3_z(da3_depths.get(frame_names[f].stem), m, alpha=1.0)
+                if dz is not None:
+                    depth_series[f] = dz
+                a = int(m.sum())
+                if a > best_area:
+                    best_area, best = a, (f, m, np.array(props[f][obj_idx]["bbox"], dtype=float))
+            # Divide out DA3 between-window depth seams on the object (window 0 = anchor).
+            deseam[obj_idx] = _deseam_object_depth(depth_series, window_id)
+            f_b, m_b, box_b = best
+            box_b[2:] += box_b[:2]                                     # xywh → xyxy
+            z_raw = depth_series[f_b] * deseam[obj_idx][f_b]           # calibrate on de-seamed depth
+            if args.assume_metric or not np.isfinite(z_raw):
+                alphas[obj_idx] = 1.0
+            else:
+                alphas[obj_idx] = _bbox_z(gaussian_splats[obj_idx], scales[obj_idx], box_b, K) / z_raw
+            n_seams = int((np.diff(deseam[obj_idx]) != 0).sum())
+            logger.info(f"[da3] obj{obj_idx}: anchor frame={f_b} mask_area={best_area} "
+                        f"alpha={alphas[obj_idx]:.4f} seams_corrected={n_seams}")
 
     # ── Instantiate estimator ──────────────────────────────────────────────────
     SLURM_JOB_ID = os.environ.get("SLURM_JOB_ID", 0)
@@ -554,7 +668,19 @@ def main(args):
                     use_template_fg_patches=args.template_fg_patches,
                     top_k=args.top_n_candidates,
                 )
-                prev_poses[obj_idx] = out["TCO"][0]
+
+            # Override translation z with DA3 metric depth at the object mask
+            # (fallback: bbox-size heuristic). Applied to every candidate so the CSV
+            # t, t_top5, and the debug overlays are all consistent.
+            if da3_depths is not None:
+                box_np_o = box.cpu().numpy().astype(float)
+                z_da3 = _da3_z(da3_depths.get(frame_name.stem), masks[obj_idx], alphas[obj_idx])
+                if z_da3 is None:
+                    z_da3 = _bbox_z(gs, scale, box_np_o, K)
+                else:
+                    z_da3 *= deseam[obj_idx][frame_idx]               # remove DA3 window-seam step
+                out["TCO"] = [_override_translation(tco, z_da3, box_np_o, K) for tco in out["TCO"]]
+            prev_poses[obj_idx] = out["TCO"][0]
 
             # Save the top-5 retrieved template images for this frame / object
             for rank, (tmpl, tmpl_id, sim) in enumerate(
@@ -682,17 +808,15 @@ def main(args):
                 logger.warning(f"Debug bbox3d_axis failed at frame {frame_idx}: {exc}")
 
             try:
-                _gs_world = gaussian_splats[obj_idx].get_xyz.detach().cpu().numpy()
-                _diam  = (_gs_world.max(0) - _gs_world.min(0)).max() * scales[obj_idx]
-                _bpx   = max(box_np[2] - box_np[0], box_np[3] - box_np[1]) + 1.0
-                _z     = K[0, 0] * _diam / _bpx
+                _save_axis(img, gaussian_splats[obj_idx], K, R_np, t_np, scales[obj_idx], box_np,
+                           debug_axis_dir / f"{frame_idx:06d}_obj{obj_idx}.png")
+            except Exception as exc:
+                logger.warning(f"Debug axis failed at frame {frame_idx}: {exc}")
+
+            try:
+                _center_cam = t_np                       # actual object translation (DA3-based when enabled)
                 _cx    = (box_np[0] + box_np[2]) / 2.0
                 _cy    = (box_np[1] + box_np[3]) / 2.0
-                _center_cam = np.array([
-                    (_cx - K[0, 2]) * _z / K[0, 0],
-                    (_cy - K[1, 2]) * _z / K[1, 1],
-                    _z,
-                ])
                 _px  = int(np.clip(round(_cx), 0, img.shape[1] - 1))
                 _py  = int(np.clip(round(_cy), 0, img.shape[0] - 1))
                 _rgb = img[_py, _px]
@@ -709,6 +833,7 @@ def main(args):
     logger.info(f"Saved poses → {pose_outputs}")
 
     _dir_to_video(debug_bbox3d_dir,      debug_dir / "bbox3d.mp4")
+    _dir_to_video(debug_axis_dir,        debug_dir / "axis.mp4")
     _dir_to_video(debug_bbox3d_axis_dir, debug_dir / "bbox3d_axis.mp4")
 
     # ── Optional inline viz (--viz flag) ──────────────────────────────────────
@@ -752,13 +877,21 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--video",       type=str, required=True)
     parser.add_argument("--proposals",   type=str, required=True)
+    parser.add_argument("--mesh",        type=str, required=True,
+                        help="Path to the Gaussian splat / mesh (result.ply) for the tracked object, "
+                             "relative to the freepose root.")
     parser.add_argument("--layer",       type=int,   default=22)
-    parser.add_argument("--depth_method",type=str,   default="zoedepth")
+    parser.add_argument("--depth_method",type=str,   default="da3")
+    parser.add_argument("--da3_depth", type=str, default=None,
+                        help="Path to DA3 da3_output.npz. If given, object translation z is set "
+                             "from DA3 metric depth at the object mask instead of the bbox-size heuristic.")
+    parser.add_argument("--assume_metric", action="store_true",
+                        help="Treat DA3 depth as already metric (skip the per-object alpha anchor).")
     parser.add_argument("--bbox_extend", type=float, default=0.05)
     parser.add_argument("--batch_size",    type=int,   default=128)
     parser.add_argument("--cache_size",    type=int,   default=21)
-    parser.add_argument("--num_templates", type=int,   default=7200,
-                        help="Number of Hopf-Hammersley SO(3) template views to render (default: 7200)")
+    parser.add_argument("--num_templates", type=int,   default=3600,
+                        help="Number of Hopf-Hammersley SO(3) template views to render (default: 3600)")
     parser.add_argument("--viz",           action="store_true")
     parser.add_argument("--save_all_cache", action="store_true")
     parser.add_argument("--mask_query",    action="store_true", default=True,
@@ -776,6 +909,9 @@ if __name__ == "__main__":
                         help="Average similarity only over each template's foreground patches (default: False). "
                              "Pass --template_fg_patches to enable.")
     parser.add_argument("--no-template_fg_patches", dest="template_fg_patches", action="store_false")
+    parser.add_argument("--results_dir", type=str, default=None,
+                        help="Directory holding the proposals JSON and receiving pose/debug output "
+                             "(default: data/results/mvsam3d/<video>)")
     parser.add_argument("--top_n_candidates", type=int, default=5,
                         help="Number of top pose candidates to retrieve per frame (default: 5).")
     args = parser.parse_args()

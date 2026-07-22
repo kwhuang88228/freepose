@@ -124,8 +124,8 @@ class DinoOnlinePoseEstimatorSam3d(nn.Module):
             save_all=save_all, cache_dir=cache_dir,
         )
         self.feature_extractor = DINOv2FeatureExtractor().to('cuda', dtype=torch.bfloat16)
-        # Fine renderer: 20 000 Hopf-Hammersley SO(3) poses; extrinsics pre-computed but renders on demand.
-        self.fine_renderer = SplatRenderer(n_views=n_fine_poses)
+        # # Fine renderer: 20 000 Hopf-Hammersley SO(3) poses; extrinsics pre-computed but renders on demand.
+        # self.fine_renderer = SplatRenderer(n_views=n_fine_poses)
         # Copy SAM-3D TCO_inits into coarse estimator so coarse forward uses them.
         self.coarse_estimator.mesh_poses = list(self.fine_renderer.tcoinits[:n_coarse_poses])
 
